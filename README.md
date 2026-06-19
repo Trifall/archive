@@ -38,27 +38,49 @@ NODE_ENV=development npx tsx scripts/migrate-streamer.ts
 
 ## Getting Started
 
-1. Install dependencies
+1. Start local infrastructure
+
+   ```bash
+   docker compose up -d
+   ```
+
+   The compose stack starts TimescaleDB/PostgreSQL, PgBouncer, Redis, and FlareSolverr. Ports are bound to `127.0.0.1` only:
+
+   - PostgreSQL: `localhost:5432`
+   - PgBouncer: `localhost:6432`
+   - Redis: `localhost:6379`
+   - FlareSolverr: `localhost:8191`
+
+2. Install dependencies
 
    ```bash
    cd path/to/archive
    npm install
    ```
 
-2. Set up environment variables
+3. Set up environment variables
 
    ```bash
-   cp .env.example .env.development
-   # Edit .env.development with your configuration
+   cp .env.example .env
+   # Edit .env with your configuration
    ```
 
-3. Create a tenant
+   For the compose defaults, use:
+
+   ```bash
+   META_DATABASE_URL=postgresql://archive:archive@localhost:5432/archive
+   PGBOUNCER_URL=postgresql://archive:archive@localhost:6432/archive
+   REDIS_URL=redis://localhost:6379
+   FLARESOLVERR_BASE_URL=http://localhost:8191
+   ```
+
+4. Create a tenant
 
    ```bash
    NODE_ENV=development npx tsx scripts/create-tenant.ts
    ```
 
-4. Start the application
+5. Start the application
 
    ```bash
    NODE_ENV=development npm run dev
@@ -95,7 +117,7 @@ Verify it's running:
 ```bash
 curl -X POST 'http://localhost:8191/v1' \
   -H 'Content-Type: application/json' \
-  -d '{"cmd":"status"}'
+  -d '{"cmd":"sessions.list"}'
 ```
 
 ## PgBouncer Setup

@@ -107,6 +107,7 @@ $RECYCLE.BIN/
 # Others
 lib/
 data/
+storage/
 
 # Build output (never commit compiled code)
 dist/
