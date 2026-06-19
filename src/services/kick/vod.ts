@@ -9,7 +9,7 @@ import { childLogger } from '../../utils/logger.js';
 const log = childLogger({ module: 'kick-vod' });
 
 export interface KickVod {
-  id: number;
+  id: number | string;
   slug: string | null;
   channel_id: number;
   created_at: string;
@@ -64,7 +64,58 @@ export interface KickVod {
   }> | null;
 }
 
-function getKickParsedM3u8(m3u8: string, baseURL: string): string | null {
+interface KickVideoByUuidResponse {
+  id: number;
+  live_stream_id: number;
+  slug: string | null;
+  thumb: string | null;
+  s3: string | null;
+  trading_platform_id: number | null;
+  created_at: string;
+  updated_at: string;
+  uuid: string;
+  views: number;
+  deleted_at: string | null;
+  is_pruned: boolean;
+  is_private: boolean;
+  status: string;
+  source: string | null;
+  livestream: Omit<KickVod, 'id' | 'source' | 'video' | 'thumbnail'> & {
+    id: number;
+    source: string | null;
+    thumbnail: string | null;
+    vod_id?: string | null;
+  };
+}
+
+const KICK_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function normalizeVideoByUuid(data: KickVideoByUuidResponse): KickVod {
+  return {
+    ...data.livestream,
+    id: data.uuid,
+    source: data.source,
+    thumbnail: data.livestream.thumbnail != null ? { src: data.livestream.thumbnail, srcset: null } : null,
+    video: {
+      id: data.id,
+      live_stream_id: data.live_stream_id,
+      slug: data.slug,
+      thumb: data.thumb,
+      s3: data.s3,
+      trading_platform_id: data.trading_platform_id,
+      created_at: data.created_at,
+      updated_at: data.updated_at,
+      uuid: data.uuid,
+      views: data.views,
+      deleted_at: data.deleted_at,
+      is_pruned: data.is_pruned,
+      is_private: data.is_private,
+      status: data.status,
+    },
+  };
+}
+
+function getKickParsedM3u8(m3u8: string, sourceUrl: string): string | null {
   try {
     const parsed = HLS.parse(m3u8);
 
@@ -79,7 +130,7 @@ function getKickParsedM3u8(m3u8: string, baseURL: string): string | null {
       return null;
     }
 
-    return `${baseURL}/${bestVariant.uri}`;
+    return new URL(bestVariant.uri, sourceUrl.substring(0, sourceUrl.lastIndexOf('/') + 1)).toString();
   } catch (error) {
     const details = extractErrorDetails(error);
     log.debug({ details }, 'Failed to parse HLS master playlist');
@@ -88,6 +139,14 @@ function getKickParsedM3u8(m3u8: string, baseURL: string): string | null {
 }
 
 export async function getVod(channelName: string, vodId: string): Promise<KickVod> {
+  if (KICK_UUID_PATTERN.test(vodId)) {
+    const byUuid = await fetchUrl<KickVideoByUuidResponse>(`${Kick.API_BASE}/api/v1/video/${vodId}`);
+
+    if (byUuid.success && byUuid.data?.uuid === vodId) {
+      return normalizeVideoByUuid(byUuid.data);
+    }
+  }
+
   const result = await fetchUrl<KickVod[]>(`${Kick.API_BASE}/api/v2/channels/${channelName}/videos`);
 
   if (!result.success) {
@@ -102,7 +161,7 @@ export async function getVod(channelName: string, vodId: string): Promise<KickVo
 
   const video = dataArray.find((v): v is KickVod => {
     if (typeof v !== 'object') return false;
-    return v.id === Number(vodId);
+    return String(v.id) === vodId || String(v.video?.live_stream_id) === vodId || v.video?.uuid === vodId;
   });
 
   if (video == null) {
@@ -122,20 +181,9 @@ export async function getKickParsedM3u8ForFfmpeg(sourceUrl: string): Promise<str
       throw new Error('Empty HLS playlist response from Kick');
     }
 
-    let m3u8Url: string | null;
+    const m3u8Url = getKickParsedM3u8(m3u8Content, sourceUrl);
 
-    if (sourceUrl.includes('master.m3u8')) {
-      const baseURL = sourceUrl.replace('/master.m3u8', '');
-      m3u8Url = getKickParsedM3u8(m3u8Content, baseURL);
-
-      if (m3u8Url == null || m3u8Url === '') {
-        throw new Error('No video variants found in HLS playlist');
-      }
-    } else {
-      m3u8Url = sourceUrl;
-    }
-
-    return m3u8Url;
+    return m3u8Url ?? sourceUrl;
   } finally {
     session.close();
   }

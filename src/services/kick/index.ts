@@ -1,5 +1,11 @@
 // Live/Stream status
-export { getKickStreamStatus, getLatestKickVodObject, type KickLiveStreamRaw } from './live.js';
+export {
+  getKickStreamStatus,
+  getKickStreamStatusResult,
+  getLatestKickVodObject,
+  type KickLiveStreamRaw,
+  type KickStreamStatusResult,
+} from './live.js';
 
 // VOD
 export { getVod, getKickParsedM3u8ForFfmpeg, type KickVod } from './vod.js';

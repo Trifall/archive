@@ -11,7 +11,13 @@ import type {
   VodCreateData,
   VodUpdateData,
 } from '../platforms/strategy.js';
+import type { KickVod } from './vod.js';
 import { getKickStreamStatus, getLatestKickVodObject, getVod, finalizeKickChapters } from './index.js';
+
+export function getKickVodStreamId(vodData: KickVod): string {
+  return String(vodData.video?.live_stream_id ?? vodData.id);
+}
+
 export const strategy: PlatformStrategy<VodCreateData, VodUpdateData> = {
   async checkStreamStatus(ctx): Promise<PlatformStreamStatus | null> {
     const { config, platform } = ctx;
@@ -48,7 +54,7 @@ export const strategy: PlatformStrategy<VodCreateData, VodUpdateData> = {
       title: vodData.session_title ?? '',
       createdAt: toUtcISO(vodData.created_at),
       duration: Math.floor(Number(vodData.duration) / 1000),
-      streamId: `${vodData.id}`,
+      streamId: getKickVodStreamId(vodData),
       sourceUrl: vodData.source ?? undefined,
     };
   },

@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { strategy } from '../../../src/services/kick/strategy.js';
+import { getKickVodStreamId, strategy } from '../../../src/services/kick/strategy.js';
 import { registerStrategy, getStrategy } from '../../../src/services/platforms/strategy.js';
 
 describe('Kick Strategy: createVodData', () => {
@@ -119,6 +119,26 @@ describe('Kick Strategy: finalizeChapters', () => {
     };
 
     await assert.doesNotReject((strategy as any).finalizeChapters?.(ctx as any, 42, 'vod-123', 3600));
+  });
+});
+
+describe('Kick Strategy: getKickVodStreamId', () => {
+  it('prefers video.live_stream_id over the VOD id for UUID recovery', () => {
+    const vodData = {
+      id: '3d9c04c5-5e47-4c21-808b-7fc556571a51',
+      video: { live_stream_id: 113465246 },
+    };
+
+    assert.strictEqual(getKickVodStreamId(vodData as any), '113465246');
+  });
+
+  it('falls back to the VOD id when live_stream_id is unavailable', () => {
+    const vodData = {
+      id: 113465246,
+      video: null,
+    };
+
+    assert.strictEqual(getKickVodStreamId(vodData as any), '113465246');
   });
 });
 
