@@ -54,6 +54,38 @@ export async function markUploadFailed(db: Kysely<StreamerDB>, vodId: number, ty
     .execute();
 }
 
+async function addVideoToPlaylist(
+  youtube: Awaited<ReturnType<typeof createYoutubeClient>>,
+  tenantId: string,
+  videoId: string,
+  playlistId: string
+): Promise<void> {
+  const logger = createAutoLogger('youtube-playlist');
+
+  try {
+    await youtube.playlistItems.insert({
+      part: ['snippet'],
+      requestBody: {
+        snippet: {
+          playlistId,
+          resourceId: {
+            kind: 'youtube#video',
+            videoId,
+          },
+        },
+      },
+    });
+
+    logger.info({ component: 'youtube-playlist', tenantId, videoId, playlistId }, 'Added video to playlist');
+  } catch (error) {
+    const details = extractErrorDetails(error);
+    logger.error(
+      { component: 'youtube-playlist', ...details, tenantId, videoId, playlistId },
+      'Failed to add video to playlist'
+    );
+  }
+}
+
 /** Progress callback data for YouTube video upload events. */
 export interface UploadProgressCallbackData {
   milestone: 'starting' | 'uploading' | 'processing_metadata' | 'success' | 'error';
@@ -84,7 +116,8 @@ export async function uploadVideo(
   description: string,
   privacyStatus: 'public' | 'unlisted' | 'private',
   onProgress?: YoutubeUploadProgress,
-  videoDuration?: number
+  videoDuration?: number,
+  playlistId?: string
 ): Promise<{ videoId: string; thumbnailUrl: string }> {
   const logger = createAutoLogger('youtube-upload');
   const uploadStartTime = Date.now();
@@ -143,6 +176,10 @@ export async function uploadVideo(
 
     const thumbnailUrl =
       response.data.snippet?.thumbnails?.medium?.url ?? `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
+
+    if (playlistId != null && playlistId !== '') {
+      await addVideoToPlaylist(youtube, tenantId, videoId, playlistId);
+    }
 
     if (onProgress) {
       await onProgress({ milestone: 'success', videoId, thumbnailUrl, videoDuration, privacyStatus });

@@ -142,7 +142,8 @@ async function uploadAndUpsertGame(params: GameUploadAndUpsertParams): Promise<{
     youtubeDescription,
     gamePrivacyStatus,
     onUploadProgress,
-    chapterDuration
+    chapterDuration,
+    config.youtube?.playlistId
   );
 
   GameUpsertSchema.parse({

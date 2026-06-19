@@ -136,4 +136,18 @@ describe('buildYoutubeMetadata', () => {
     const result = buildYoutubeMetadata({ ...baseOptions, platform: 'twitch' });
     assert.ok(result.title.includes('Twitch'));
   });
+
+  it('should omit chat replay when domainName is localhost', () => {
+    const result = buildYoutubeMetadata({ ...baseOptions, domainName: 'localhost:3030' });
+
+    assert.ok(!result.description.includes('Chat Replay:'));
+    assert.ok(!result.description.includes('localhost'));
+    assert.ok(result.description.startsWith('Stream Title:'));
+  });
+
+  it('should preserve explicit public replay scheme and host', () => {
+    const result = buildYoutubeMetadata({ ...baseOptions, domainName: 'https://archive.example.com' });
+
+    assert.ok(result.description.includes('Chat Replay: https://archive.example.com/youtube/42'));
+  });
 });

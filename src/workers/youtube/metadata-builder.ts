@@ -7,6 +7,24 @@ function sanitizeYoutubeText(text: string): string {
   return text.replace(/[<>]/g, '');
 }
 
+function getPublicReplayBaseUrl(domainName: string): string | null {
+  const normalized = domainName.trim();
+  if (normalized === '') return null;
+
+  try {
+    const url = new URL(normalized.includes('://') ? normalized : `https://${normalized}`);
+    const host = url.hostname.toLowerCase();
+
+    if (host === 'localhost' || host.endsWith('.localhost')) return null;
+    if (host === '127.0.0.1' || host === '0.0.0.0' || host === '::1') return null;
+    if (!host.includes('.')) return null;
+
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return null;
+  }
+}
+
 export interface YoutubeMetadataOptions {
   channelName: string;
   platform: Platform;
@@ -46,7 +64,13 @@ export function buildYoutubeMetadata(options: YoutubeMetadataOptions): YoutubeMe
   const sanitizedTitle = vodRecord.title != null && vodRecord.title !== '' ? sanitizeYoutubeText(vodRecord.title) : '';
   const sanitizedDesc =
     youtubeDescription != null && youtubeDescription !== '' ? sanitizeYoutubeText(youtubeDescription) : '';
-  const description = `Chat Replay: https://${domainName}${replayPath}\nStream Title: ${sanitizedTitle}\n${sanitizedDesc}`;
+  const replayBaseUrl = getPublicReplayBaseUrl(domainName);
+  const descriptionLines = [
+    ...(replayBaseUrl != null ? [`Chat Replay: ${replayBaseUrl}${replayPath}`] : []),
+    `Stream Title: ${sanitizedTitle}`,
+    sanitizedDesc,
+  ];
+  const description = descriptionLines.join('\n');
 
   return { title, description };
 }

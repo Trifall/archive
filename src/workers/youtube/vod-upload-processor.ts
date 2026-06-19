@@ -222,7 +222,8 @@ async function processSplitVodUpload(ctx: SplitVodUploadContext): Promise<VodUpl
       youtubeDescription,
       privacyStatus as 'public' | 'unlisted' | 'private',
       onUploadProgress,
-      partDuration
+      partDuration,
+      config.youtube?.playlistId
     );
 
     uploadedVideos.push({ id: result.videoId, part: i + 1, duration: partDuration, thumbnailUrl: result.thumbnailUrl });
@@ -325,7 +326,8 @@ async function processSingleVodUpload(ctx: SingleVodUploadContext): Promise<VodU
     youtubeDescription,
     privacyStatus as 'public' | 'unlisted' | 'private',
     onUploadProgress,
-    duration
+    duration,
+    config.youtube?.playlistId
   );
 
   const uploadPart = part ?? 1;
