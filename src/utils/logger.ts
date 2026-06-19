@@ -70,7 +70,7 @@ export function createLogger(opts: { level: string; isProduction: boolean }): Ap
     target: 'pino-pretty',
     options: {
       colorize: true,
-      translateTime: 'mmmm dd yyyy HH:mm:ss',
+      translateTime: 'mmmm dd yyyy HH:MM:ss',
       ignore: 'pid,hostname,tenant,reqId',
       singleLine: false,
     },
