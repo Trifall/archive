@@ -1,8 +1,9 @@
 import { Processor, Worker, BaseJobOptions, ConnectionOptions } from 'bullmq';
 import type { Redis } from 'ioredis';
+import { WorkerRuntime } from '../constants.js';
 import { extractErrorDetails } from '../utils/error.js';
 import { getLogger } from '../utils/logger.js';
-import { WorkerName } from './queues/queue.js';
+import { QUEUE_NAMES, WorkerName } from './queues/queue.js';
 
 export interface WorkerConfig<TData, TResult = unknown> {
   name: WorkerName;
@@ -62,11 +63,19 @@ export function createWorker<TData, TResult = unknown>(
   registry?: WorkerRegistry
 ): Worker<TData, TResult> {
   const { name, processor, connection, concurrency = 1, useWorkerThreads = false } = config;
+  const liveWorkerOptions =
+    name === QUEUE_NAMES.VOD_LIVE
+      ? {
+          lockDuration: WorkerRuntime.LIVE_LOCK_DURATION_MS,
+          lockRenewTime: WorkerRuntime.LIVE_LOCK_RENEW_TIME_MS,
+        }
+      : {};
 
   const worker = new Worker<TData, TResult>(name, processor, {
     connection: connection as unknown as ConnectionOptions,
     concurrency,
     useWorkerThreads,
+    ...liveWorkerOptions,
   });
 
   worker.on('active', (job) => {
@@ -100,7 +109,7 @@ export function createWorker<TData, TResult = unknown>(
   worker.on('stalled', (jobId) => {
     getLogger().warn(
       { component: 'worker', jobId, queueName: name },
-      'Job stalled - lock may have expired. This typically happens when a job takes longer than the lock duration (default: 30s). Check if event loop is blocked.'
+      'Job stalled - lock may have expired. Check if event loop is blocked or the worker process was interrupted.'
     );
   });
 

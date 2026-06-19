@@ -1,7 +1,7 @@
 import fsPromises from 'fs/promises';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { cleanupOrphanedTmpFiles } from '../../../src/workers/vod/hls-utils.js';
+import { cleanupOrphanedTmpFiles, fetchKickPlaylist, getSegmentFileName } from '../../../src/workers/vod/hls-utils.js';
 
 describe('cleanupOrphanedTmpFiles', () => {
   it('should not throw when directory is empty', async () => {
@@ -166,5 +166,155 @@ describe('cleanupOrphanedTmpFiles', () => {
 
     (fsPromises as any).readdir = mockReaddir;
     (fsPromises as any).unlink = mockUnlink;
+  });
+});
+
+describe('fetchKickPlaylist', () => {
+  it('handles Kick live playback URLs that return a master playlist', async () => {
+    const calls: string[] = [];
+    const session = {
+      fetchText: async (url: string) => {
+        calls.push(url);
+        if (url === 'https://playback.example.com/channel.m3u8?token=abc') {
+          return `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=1000,RESOLUTION=1280x720
+https://playlist.example.com/live/variant.m3u8`;
+        }
+        if (url === 'https://playlist.example.com/live/variant.m3u8') {
+          return `#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXTINF:2,
+segment-1.ts`;
+        }
+        throw new Error(`Unexpected URL ${url}`);
+      },
+    };
+
+    const result = await fetchKickPlaylist(
+      'vod-1',
+      'https://playback.example.com/channel.m3u8?token=abc',
+      { error: () => {} } as any,
+      session as any
+    );
+
+    assert.deepStrictEqual(calls, [
+      'https://playback.example.com/channel.m3u8?token=abc',
+      'https://playlist.example.com/live/variant.m3u8',
+    ]);
+    assert.strictEqual(result.baseURL, 'https://playlist.example.com/live');
+    assert.ok(result.variantM3u8String.includes('segment-1.ts'));
+  });
+
+  it('handles relative Kick master playlist variants', async () => {
+    const calls: string[] = [];
+    const session = {
+      fetchText: async (url: string) => {
+        calls.push(url);
+        if (url === 'https://stream.kick.com/path/master.m3u8') {
+          return `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=1000,RESOLUTION=1280x720
+720p/playlist.m3u8`;
+        }
+        if (url === 'https://stream.kick.com/path/720p/playlist.m3u8') {
+          return `#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXTINF:2,
+segment-1.ts`;
+        }
+        throw new Error(`Unexpected URL ${url}`);
+      },
+    };
+
+    const result = await fetchKickPlaylist(
+      'vod-1',
+      'https://stream.kick.com/path/master.m3u8',
+      { error: () => {} } as any,
+      session as any
+    );
+
+    assert.deepStrictEqual(calls, [
+      'https://stream.kick.com/path/master.m3u8',
+      'https://stream.kick.com/path/720p/playlist.m3u8',
+    ]);
+    assert.strictEqual(result.baseURL, 'https://stream.kick.com/path/720p');
+  });
+
+  it('handles Kick master playlists with strict-parser-invalid VIDEO attributes', async () => {
+    const calls: string[] = [];
+    const session = {
+      fetchText: async (url: string) => {
+        calls.push(url);
+        if (url === 'https://stream.kick.com/path/master.m3u8') {
+          return `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=1000,RESOLUTION=1280x720,VIDEO="chunked"
+720p/playlist.m3u8`;
+        }
+        if (url === 'https://stream.kick.com/path/720p/playlist.m3u8') {
+          return `#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXTINF:2,
+segment-1.ts`;
+        }
+        throw new Error(`Unexpected URL ${url}`);
+      },
+    };
+
+    const result = await fetchKickPlaylist(
+      'vod-1',
+      'https://stream.kick.com/path/master.m3u8',
+      { error: () => {} } as any,
+      session as any
+    );
+
+    assert.deepStrictEqual(calls, [
+      'https://stream.kick.com/path/master.m3u8',
+      'https://stream.kick.com/path/720p/playlist.m3u8',
+    ]);
+    assert.strictEqual(result.baseURL, 'https://stream.kick.com/path/720p');
+    assert.ok(result.variantM3u8String.includes('segment-1.ts'));
+  });
+});
+
+describe('getSegmentFileName', () => {
+  it('uses a stable hashed name for absolute segment URLs', () => {
+    const result = getSegmentFileName('https://cdn.example.com/live/segment-1.ts?token=abc');
+    assert.match(result, /^[a-f0-9]{24}\.ts$/);
+    assert.strictEqual(result, getSegmentFileName('https://cdn.example.com/live/segment-1.ts?token=abc'));
+  });
+
+  it('preserves relative segment names', () => {
+    assert.strictEqual(getSegmentFileName('segment-2.ts'), 'segment-2.ts');
+  });
+
+  it('avoids collisions for distinct URLs with the same basename', () => {
+    const first = getSegmentFileName('https://cdn.example.com/rendition-a/segment.ts?token=abc');
+    const second = getSegmentFileName('https://cdn.example.com/rendition-b/segment.ts?token=abc');
+
+    assert.notStrictEqual(first, second);
+    assert.match(first, /^[a-f0-9]{24}\.ts$/);
+    assert.match(second, /^[a-f0-9]{24}\.ts$/);
+  });
+
+  it('avoids collisions for query-distinguished relative segment names', () => {
+    const first = getSegmentFileName('segment.ts?token=abc');
+    const second = getSegmentFileName('segment.ts?token=def');
+
+    assert.notStrictEqual(first, second);
+    assert.match(first, /^[a-f0-9]{24}\.ts$/);
+    assert.match(second, /^[a-f0-9]{24}\.ts$/);
+  });
+
+  it('truncates very long file names and hashes them', () => {
+    const longName = 'a'.repeat(300);
+    const result = getSegmentFileName(`https://example.com/${longName}`);
+    assert.ok(result.length <= 200, 'filename should be truncated');
+    assert.strictEqual(result.length, 24); // just the hash
+  });
+
+  it('truncates very long extensions', () => {
+    const longExt = 'b'.repeat(100);
+    const result = getSegmentFileName(`https://example.com/${'a'.repeat(300)}.${longExt}`);
+    assert.ok(result.length <= 200, 'filename should be truncated');
+    assert.strictEqual(result.length, 24 + 10); // hash + 10 char extension (including the dot)
   });
 });

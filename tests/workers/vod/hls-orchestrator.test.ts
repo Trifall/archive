@@ -32,6 +32,7 @@ const mockFsMkdir: any = mock.fn(async (_path: string, _opts: any) => {});
 const mockFsWriteFile: any = mock.fn(async (_path: string, _data: string) => {});
 const mockFsReadFile: any = mock.fn(async (_path: string) => mockPlaylistVariantM3u8);
 const mockFsReaddir: any = mock.fn(async (_path: string) => ['seg001.ts', 'seg002.ts', 'seg003.ts', 'vod.mp4']);
+const mockFsStat: any = mock.fn(async (_path: string) => ({ size: 1024 }));
 
 const mockFetchTwitchPlaylist: any = mock.fn(async () => mockPlaylistResult);
 const mockFetchKickPlaylist: any = mock.fn(async () => mockPlaylistResult);
@@ -39,6 +40,7 @@ const mockDownloadSegmentsParallel: any = mock.fn(async () => {});
 const mockResolveDownloadStrategy: any = mock.fn(() => ({ type: 'fetch', abort: () => {} }));
 const mockConvertHlsToMp4: any = mock.fn(async () => {});
 const mockDetectFmp4FromPlaylist: any = mock.fn(() => false);
+const mockGetMetadata: any = mock.fn(async () => ({ duration: 30 }));
 const mockSleep: any = mock.fn(async () => {});
 const mockGetRetryDelay: any = mock.fn(() => 0);
 const mockCreateSession: any = mock.fn(() => ({
@@ -52,7 +54,16 @@ const mockCreateSession: any = mock.fn(() => ({
 const mockGetVodDirPath: any = mock.fn(() => '/tmp/test-vods/test-tenant/vod-123');
 const mockGetVodFilePath: any = mock.fn(() => '/tmp/test-vods/test-tenant/vod-123/vod-123.mp4');
 const mockUpdateChapterDuringDownload: any = mock.fn(async () => {});
+const mockGetVod: any = mock.fn(async () => ({ source: 'https://example.com/archive/master.m3u8' }));
+const mockGetKickStreamStatus: any = mock.fn(async () => null);
+const mockGetKickStreamStatusResult: any = mock.fn(async () => ({ status: 'offline' }));
 const mockUpdateVodDurationDuringDownload: any = mock.fn(async () => {});
+
+function mockGetSegmentFileName(uri: string): string {
+  const withoutQuery = uri.split(/[?#]/, 1)[0] ?? uri;
+  const parts = withoutQuery.split('/');
+  return parts.at(-1) ?? uri;
+}
 
 let sessionCloseCalled = false;
 let logCalls: Array<{ level: string; args: unknown[] }> = [];
@@ -70,6 +81,7 @@ mock.module('fs/promises', {
     writeFile: mockFsWriteFile,
     readFile: mockFsReadFile,
     readdir: mockFsReaddir,
+    stat: mockFsStat,
     access: mock.fn(async () => {}),
   },
 });
@@ -107,6 +119,7 @@ mock.module('../../../src/workers/vod/hls-utils.js', {
     downloadSegmentsParallel: mockDownloadSegmentsParallel,
     fetchTwitchPlaylist: mockFetchTwitchPlaylist,
     fetchKickPlaylist: mockFetchKickPlaylist,
+    getSegmentFileName: mockGetSegmentFileName,
     resolveDownloadStrategy: mockResolveDownloadStrategy,
   },
 });
@@ -115,11 +128,15 @@ mock.module('../../../src/workers/utils/ffmpeg.js', {
   namedExports: {
     convertHlsToMp4: mockConvertHlsToMp4,
     detectFmp4FromPlaylist: mockDetectFmp4FromPlaylist,
+    getMetadata: mockGetMetadata,
   },
 });
 
 mock.module('../../../src/services/kick/index.js', {
   namedExports: {
+    getKickStreamStatus: mockGetKickStreamStatus,
+    getKickStreamStatusResult: mockGetKickStreamStatusResult,
+    getVod: mockGetVod,
     updateChapterDuringDownload: mockUpdateChapterDuringDownload,
   },
 });
@@ -151,14 +168,14 @@ const { downloadHlsStream, filterNewSegments, fetchPlaylist } =
 // filterNewSegments — pure function unit tests
 // ============================================================================
 
-function makeSeg(uri: string, duration = 10) {
+function makeSeg(uri: string, duration = 10, mediaSequenceNumber = 0) {
   return {
     uri,
     duration,
     mimeType: '',
     data: null,
     byterange: null,
-    mediaSequenceNumber: 0,
+    mediaSequenceNumber,
     discontinuitySequenceNumber: 0,
     programDateTime: null,
     t: null,
@@ -299,6 +316,28 @@ describe('filterNewSegments', () => {
     assert.strictEqual(result.newSegments.length, 2);
     assert.strictEqual(result.newSegments[0]!.uri, 'seg002.ts');
     assert.strictEqual(result.newSegments[1]!.uri, 'seg004.ts');
+  });
+
+  it('should compare absolute segment URLs by local file name', () => {
+    const segments = [
+      makeSeg('https://cdn.example.com/live/seg001.ts?token=abc'),
+      makeSeg('https://cdn.example.com/live/seg002.ts?token=abc'),
+    ];
+
+    const downloaded = new Set(['seg001.ts']);
+    const result = filterNewSegments(segments, downloaded, 'https://cdn.example.com/live/seg001.ts?token=abc', 0);
+
+    assert.strictEqual(result.newSegments.length, 1);
+    assert.strictEqual(result.newSegments[0]!.uri, 'https://cdn.example.com/live/seg002.ts?token=abc');
+  });
+
+  it('should compare token-rotated segments by media sequence when available', () => {
+    const segments = [makeSeg('https://cdn.example.com/live/seg001.ts?token=fresh', 10, 42)];
+
+    const downloaded = new Set(['media-sequence:42']);
+    const result = filterNewSegments(segments, downloaded, 'https://cdn.example.com/live/seg001.ts?token=old', 0);
+
+    assert.strictEqual(result.newSegments.length, 0);
   });
 
   it('should use segments.at(-1) for last URI detection', () => {
@@ -474,7 +513,12 @@ describe('downloadHlsStream', () => {
     mockFetchTwitchPlaylist.mock.mockImplementation(async () => mockPlaylistResult);
     mockFetchKickPlaylist.mock.mockImplementation(async () => mockPlaylistResult);
     mockDownloadSegmentsParallel.mock.mockImplementation(async () => {});
+    mockFsReadFile.mock.mockImplementation(async () => mockPlaylistVariantM3u8);
+    mockGetKickStreamStatus.mock.mockImplementation(async () => null);
+    mockGetKickStreamStatusResult.mock.mockImplementation(async () => ({ status: 'offline' }));
+    mockGetVod.mock.mockImplementation(async () => ({ source: 'https://example.com/archive/master.m3u8' }));
     mockGetRetryDelay.mock.mockImplementation(() => 0);
+    mockGetMetadata.mock.mockImplementation(async () => ({ duration: 30 }));
   });
 
   afterEach(() => {
@@ -482,17 +526,22 @@ describe('downloadHlsStream', () => {
     mockFsWriteFile.mock.resetCalls();
     mockFsReadFile.mock.resetCalls();
     mockFsReaddir.mock.resetCalls();
+    mockFsStat.mock.resetCalls();
     mockFetchTwitchPlaylist.mock.resetCalls();
     mockFetchKickPlaylist.mock.resetCalls();
     mockDownloadSegmentsParallel.mock.resetCalls();
     mockResolveDownloadStrategy.mock.resetCalls();
     mockConvertHlsToMp4.mock.resetCalls();
     mockDetectFmp4FromPlaylist.mock.resetCalls();
+    mockGetMetadata.mock.resetCalls();
     mockSleep.mock.resetCalls();
     mockGetRetryDelay.mock.resetCalls();
     mockCreateSession.mock.resetCalls();
     mockGetVodDirPath.mock.resetCalls();
     mockGetVodFilePath.mock.resetCalls();
+    mockGetKickStreamStatus.mock.resetCalls();
+    mockGetKickStreamStatusResult.mock.resetCalls();
+    mockGetVod.mock.resetCalls();
     mockUpdateChapterDuringDownload.mock.resetCalls();
     mockUpdateVodDurationDuringDownload.mock.resetCalls();
   });
@@ -521,6 +570,24 @@ describe('downloadHlsStream', () => {
 
       assert.strictEqual(mockDetectFmp4FromPlaylist.mock.callCount(), 1);
       assert.strictEqual(mockConvertHlsToMp4.mock.callCount(), 1);
+    });
+
+    it('should fail conversion when output duration is much shorter than playlist duration', async () => {
+      mockGetMetadata.mock.mockImplementation(async () => ({ duration: 6 }));
+
+      await assert.rejects(
+        downloadHlsStream(buildOptions({ platform: PLATFORMS.TWITCH, isLive: false })),
+        /Converted MP4 duration 6s is shorter than playlist duration 30s/
+      );
+    });
+
+    it('should fail conversion when output metadata has no valid video duration', async () => {
+      mockGetMetadata.mock.mockImplementation(async () => null);
+
+      await assert.rejects(
+        downloadHlsStream(buildOptions({ platform: PLATFORMS.TWITCH, isLive: false })),
+        /Converted MP4 has invalid duration or no video stream for playlist duration 30s/
+      );
     });
 
     it('should throw when archived VOD playlist has no segments', async () => {
@@ -575,8 +642,6 @@ describe('downloadHlsStream', () => {
           playlistLines.push(`#EXTINF:10.0,`);
           playlistLines.push(seg);
         }
-        playlistLines.push('#EXT-X-ENDLIST');
-
         return {
           variantM3u8String: playlistLines.join('\n'),
           baseURL: 'https://example.com/segments',
@@ -628,6 +693,183 @@ describe('downloadHlsStream', () => {
       assert.ok(progressCalls > 0, 'Expected onProgress to be called during live polling');
     });
 
+    it('should retry fMP4 init map download when the prior segment batch fails', async () => {
+      let downloadCallCount = 0;
+      const batchUris: string[][] = [];
+
+      mockFetchTwitchPlaylist.mock.mockImplementation(async () => ({
+        variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:10\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:10.0,\nseg-fmp4.m4s\n#EXT-X-ENDLIST`,
+        baseURL: 'https://example.com/segments',
+      }));
+
+      mockDownloadSegmentsParallel.mock.mockImplementation(async (segments: Array<{ uri: string }>) => {
+        downloadCallCount++;
+        batchUris.push(segments.map((seg) => seg.uri));
+
+        if (downloadCallCount === 1) {
+          throw new Error('Download failed');
+        }
+      });
+
+      await downloadHlsStream(buildOptions({ platform: PLATFORMS.TWITCH, isLive: true }));
+
+      assert.strictEqual(mockDownloadSegmentsParallel.mock.callCount(), 2);
+      assert.deepStrictEqual(batchUris[0], ['init.mp4', 'seg-fmp4.m4s']);
+      assert.deepStrictEqual(batchUris[1], ['init.mp4', 'seg-fmp4.m4s']);
+    });
+
+    it('should write a cumulative live playlist instead of only the latest sliding window', async () => {
+      let pollCount = 0;
+
+      mockFetchTwitchPlaylist.mock.mockImplementation(async () => {
+        pollCount++;
+        const segment = pollCount === 1 ? 'live-window-a.ts' : 'live-window-b.ts';
+        const endlist = pollCount === 1 ? '' : '\n#EXT-X-ENDLIST';
+
+        return {
+          variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\n${segment}${endlist}`,
+          baseURL: 'https://example.com/segments',
+        };
+      });
+
+      await downloadHlsStream(buildOptions({ platform: PLATFORMS.TWITCH, isLive: true }));
+
+      const finalWrite = mockFsWriteFile.mock.calls.at(-1);
+      assert.ok(finalWrite);
+      const writtenPlaylist = finalWrite.arguments[1] as string;
+      assert.ok(writtenPlaylist.includes('live-window-a.ts'));
+      assert.ok(writtenPlaylist.includes('live-window-b.ts'));
+      assert.ok(writtenPlaylist.includes('#EXT-X-ENDLIST'));
+    });
+
+    it('should raise local playlist target duration to fit cumulative segments', async () => {
+      let pollCount = 0;
+
+      mockFetchTwitchPlaylist.mock.mockImplementation(async () => {
+        pollCount++;
+        const segment = pollCount === 1 ? 'live-window-a.ts' : 'live-window-b.ts';
+        const endlist = pollCount === 1 ? '' : '\n#EXT-X-ENDLIST';
+
+        return {
+          variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXTINF:12.0,\n${segment}${endlist}`,
+          baseURL: 'https://example.com/segments',
+        };
+      });
+
+      await downloadHlsStream(buildOptions({ platform: PLATFORMS.TWITCH, isLive: true }));
+
+      const finalWrite = mockFsWriteFile.mock.calls.at(-1);
+      assert.ok(finalWrite);
+      const writtenPlaylist = finalWrite.arguments[1] as string;
+      assert.ok(writtenPlaylist.includes('#EXT-X-TARGETDURATION:12'), writtenPlaylist);
+    });
+
+    it('should poll live playlists based on target duration instead of the fixed fallback interval', async () => {
+      let pollCount = 0;
+
+      mockFetchTwitchPlaylist.mock.mockImplementation(async () => {
+        pollCount++;
+        const endlist = pollCount === 1 ? '' : '\n#EXT-X-ENDLIST';
+
+        return {
+          variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\nseg${pollCount}.ts${endlist}`,
+          baseURL: 'https://example.com/segments',
+        };
+      });
+
+      await downloadHlsStream(buildOptions({ platform: PLATFORMS.TWITCH, isLive: true }));
+
+      assert.strictEqual(mockSleep.mock.callCount(), 1);
+      assert.strictEqual(mockSleep.mock.calls[0]?.arguments[0], 4_000);
+    });
+
+    it('should not shorten no-change stream end detection when target duration is small', async () => {
+      let pollCount = 0;
+
+      mockFetchTwitchPlaylist.mock.mockImplementation(async () => {
+        pollCount++;
+        const endlist = pollCount > Hls.NO_CHANGE_THRESHOLD + 1 ? '\n#EXT-X-ENDLIST' : '';
+
+        return {
+          variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nseg999.ts${endlist}`,
+          baseURL: 'https://example.com/segments',
+        };
+      });
+
+      await downloadHlsStream(buildOptions({ platform: PLATFORMS.TWITCH, isLive: true }));
+
+      assert.strictEqual(pollCount, Hls.NO_CHANGE_THRESHOLD + 2);
+    });
+
+    it('should keep cumulative live playlist media sequence aligned to the first recorded segment', async () => {
+      let pollCount = 0;
+      let readCount = 0;
+      mockFsReadFile.mock.mockImplementation(async () => {
+        readCount++;
+        if (readCount === 1) {
+          throw new Error('ENOENT: no such file or directory');
+        }
+        return (mockFsWriteFile.mock.calls.at(-1)?.arguments[1] as string | undefined) ?? mockPlaylistVariantM3u8;
+      });
+
+      mockFetchTwitchPlaylist.mock.mockImplementation(async () => {
+        pollCount++;
+        const sequence = pollCount === 1 ? 100 : 101;
+        const segment = pollCount === 1 ? 'live-window-a.ts' : 'live-window-b.ts';
+        const endlist = pollCount === 1 ? '' : '\n#EXT-X-ENDLIST';
+
+        return {
+          variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXT-X-MEDIA-SEQUENCE:${sequence}\n#EXTINF:10.0,\n${segment}${endlist}`,
+          baseURL: 'https://example.com/segments',
+        };
+      });
+
+      await downloadHlsStream(buildOptions({ platform: PLATFORMS.TWITCH, isLive: true }));
+
+      const finalWrite = mockFsWriteFile.mock.calls.at(-1);
+      assert.ok(finalWrite);
+      const writtenPlaylist = finalWrite.arguments[1] as string;
+      assert.ok(writtenPlaylist.includes('#EXT-X-MEDIA-SEQUENCE:100'), writtenPlaylist);
+      assert.ok(!writtenPlaylist.includes('#EXT-X-MEDIA-SEQUENCE:101'), writtenPlaylist);
+      assert.ok(writtenPlaylist.includes('live-window-a.ts'));
+      assert.ok(writtenPlaylist.includes('live-window-b.ts'));
+    });
+
+    it('should not sleep for another poll after a verified endlist', async () => {
+      mockFetchTwitchPlaylist.mock.mockImplementation(async () => ({
+        variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\nseg999.ts\n#EXT-X-ENDLIST`,
+        baseURL: 'https://example.com/segments',
+      }));
+
+      await downloadHlsStream(buildOptions({ platform: PLATFORMS.TWITCH, isLive: true }));
+
+      assert.strictEqual(mockSleep.mock.callCount(), 0);
+    });
+
+    it('should strip nonessential timeline metadata from generated live playlists', async () => {
+      mockFetchKickPlaylist.mock.mockImplementation(async () => ({
+        variantM3u8String: `#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:10
+#EXT-X-PROGRAM-DATE-TIME:2026-06-18T22:46:28.870Z
+#EXT-X-DATERANGE:ID="ad-1",CLASS="ad",START-DATE="2026-06-18T22:46:28.870Z",END-ON-NEXT=YES,DURATION=10
+#EXTINF:10.0,
+seg999.ts
+#EXT-X-ENDLIST`,
+        baseURL: 'https://example.com/segments',
+      }));
+
+      await downloadHlsStream(buildOptions({ platform: PLATFORMS.KICK, platformUserId: 'kick-123', isLive: true }));
+
+      const finalWrite = mockFsWriteFile.mock.calls.at(-1);
+      assert.ok(finalWrite);
+      const writtenPlaylist = finalWrite.arguments[1] as string;
+      assert.ok(!writtenPlaylist.includes('#EXT-X-PROGRAM-DATE-TIME'), writtenPlaylist);
+      assert.ok(!writtenPlaylist.includes('#EXT-X-DATERANGE'), writtenPlaylist);
+      assert.ok(writtenPlaylist.includes('seg999.ts'));
+      assert.ok(writtenPlaylist.includes('#EXT-X-ENDLIST'));
+    });
+
     it('should close Impit session in finally block on live polling error', async () => {
       mockFetchKickPlaylist.mock.mockImplementation(async () => {
         throw new Error('Playlist fetch failed');
@@ -641,6 +883,222 @@ describe('downloadHlsStream', () => {
       assert.strictEqual(sessionCloseCalled, true);
     });
 
+    it('should refresh stale Kick live playback URL before trying archived VOD source', async () => {
+      const staleUrl = 'https://kick.example.com/stale.m3u8';
+      const freshUrl = 'https://kick.example.com/fresh.m3u8';
+      let fetchCount = 0;
+      let statusCount = 0;
+
+      mockFetchKickPlaylist.mock.mockImplementation(async (_vodId: string, sourceUrl: string) => {
+        fetchCount++;
+        if (fetchCount === 1) {
+          assert.strictEqual(sourceUrl, staleUrl);
+          throw new Error('Impit request failed with status 403');
+        }
+        assert.strictEqual(sourceUrl, freshUrl);
+        return {
+          variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\nseg999.ts\n#EXT-X-ENDLIST`,
+          baseURL: 'https://example.com/segments',
+        };
+      });
+
+      mockGetKickStreamStatusResult.mock.mockImplementation(async () => {
+        statusCount++;
+        if (statusCount === 1) {
+          return { status: 'live', stream: { id: 'vod-123', playback_url: freshUrl } };
+        }
+        return { status: 'offline' };
+      });
+
+      await downloadHlsStream(
+        buildOptions({
+          platform: PLATFORMS.KICK,
+          platformUsername: 'kickuser',
+          sourceUrl: staleUrl,
+          isLive: true,
+        })
+      );
+
+      assert.strictEqual(mockGetKickStreamStatus.mock.callCount(), 0);
+      assert.strictEqual(mockGetKickStreamStatusResult.mock.callCount(), 2);
+      assert.strictEqual(mockGetVod.mock.callCount(), 0);
+      assert.strictEqual(mockFetchKickPlaylist.mock.callCount(), 2);
+    });
+
+    it('should retry immediately once after refreshing Kick playback URL, then back off repeated refreshes', async () => {
+      let fetchCount = 0;
+
+      mockFetchKickPlaylist.mock.mockImplementation(async () => {
+        fetchCount++;
+        if (fetchCount <= 2) {
+          throw new Error('Impit request failed with status 404');
+        }
+        return {
+          variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\nseg999.ts\n#EXT-X-ENDLIST`,
+          baseURL: 'https://example.com/segments',
+        };
+      });
+
+      mockGetKickStreamStatusResult.mock.mockImplementation(async () => ({
+        ...(fetchCount <= 2
+          ? {
+              status: 'live' as const,
+              stream: { id: 'vod-123', playback_url: `https://kick.example.com/fresh-${fetchCount}.m3u8` },
+            }
+          : { status: 'offline' as const }),
+      }));
+
+      await downloadHlsStream(
+        buildOptions({
+          platform: PLATFORMS.KICK,
+          platformUsername: 'kickuser',
+          sourceUrl: 'https://kick.example.com/stale.m3u8',
+          isLive: true,
+        })
+      );
+
+      assert.strictEqual(mockFetchKickPlaylist.mock.callCount(), 3);
+      assert.strictEqual(mockGetRetryDelay.mock.callCount(), 1);
+      assert.strictEqual(mockGetRetryDelay.mock.calls[0]?.arguments[1], Hls.KICK_PLAYLIST_ERROR_RETRY_BASE_MS);
+      assert.strictEqual(mockSleep.mock.callCount(), 1);
+      assert.strictEqual(logCalls.filter((c) => c.level === 'error').length, 0);
+    });
+
+    it('should finalize downloaded Kick live segments when archived VOD is not ready after stream end', async () => {
+      let fetchCount = 0;
+
+      mockFetchKickPlaylist.mock.mockImplementation(async () => {
+        fetchCount++;
+        if (fetchCount === 1) {
+          return {
+            variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\nseg999.ts`,
+            baseURL: 'https://example.com/segments',
+          };
+        }
+        throw new Error('Impit request failed with status 404');
+      });
+
+      mockGetKickStreamStatusResult.mock.mockImplementation(async () => ({ status: 'offline' }));
+      mockGetVod.mock.mockImplementation(async () => {
+        throw new Error('VOD not found: vod-123 (kick api)');
+      });
+
+      await downloadHlsStream(
+        buildOptions({
+          platform: PLATFORMS.KICK,
+          platformUsername: 'kickuser',
+          isLive: true,
+        })
+      );
+
+      assert.strictEqual(mockFetchKickPlaylist.mock.callCount(), 2);
+      assert.strictEqual(mockGetVod.mock.callCount(), 1);
+      assert.strictEqual(mockConvertHlsToMp4.mock.callCount(), 1);
+      const finalWrite = mockFsWriteFile.mock.calls.at(-1);
+      assert.ok(finalWrite);
+      assert.ok((finalWrite.arguments[1] as string).includes('#EXT-X-ENDLIST'));
+      assert.strictEqual(logCalls.filter((c) => c.level === 'error').length, 0);
+    });
+
+    it('should ignore Kick endlist while the same stream is still live', async () => {
+      const staleUrl = 'https://kick.example.com/stale.m3u8';
+      const freshUrl = 'https://kick.example.com/fresh.m3u8';
+      let fetchCount = 0;
+      let statusCount = 0;
+
+      mockFetchKickPlaylist.mock.mockImplementation(async (_vodId: string, sourceUrl: string) => {
+        fetchCount++;
+        if (fetchCount === 1) {
+          assert.strictEqual(sourceUrl, staleUrl);
+          return {
+            variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\nseg999.ts\n#EXT-X-ENDLIST`,
+            baseURL: 'https://example.com/segments',
+          };
+        }
+        assert.strictEqual(sourceUrl, freshUrl);
+        return {
+          variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\nseg1000.ts\n#EXT-X-ENDLIST`,
+          baseURL: 'https://example.com/segments',
+        };
+      });
+
+      mockGetKickStreamStatusResult.mock.mockImplementation(async () => {
+        statusCount++;
+        if (statusCount === 1) {
+          return { status: 'live', stream: { id: 'vod-123', playback_url: freshUrl } };
+        }
+        return { status: 'offline' };
+      });
+
+      await downloadHlsStream(
+        buildOptions({
+          platform: PLATFORMS.KICK,
+          platformUsername: 'kickuser',
+          sourceUrl: staleUrl,
+          isLive: true,
+        })
+      );
+
+      assert.strictEqual(mockGetKickStreamStatusResult.mock.callCount(), 2);
+      assert.strictEqual(mockFetchKickPlaylist.mock.callCount(), 2);
+    });
+
+    it('should keep polling when Kick end status cannot be verified', async () => {
+      let fetchCount = 0;
+      let statusCount = 0;
+
+      mockFetchKickPlaylist.mock.mockImplementation(async () => {
+        fetchCount++;
+        const seg = fetchCount === 1 ? 'seg999.ts' : 'seg1000.ts';
+        return {
+          variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\n${seg}\n#EXT-X-ENDLIST`,
+          baseURL: 'https://example.com/segments',
+        };
+      });
+
+      mockGetKickStreamStatusResult.mock.mockImplementation(async () => {
+        statusCount++;
+        if (statusCount === 1) {
+          return { status: 'unknown', error: 'FlareSolverr timeout' };
+        }
+        return { status: 'offline' };
+      });
+
+      await downloadHlsStream(
+        buildOptions({
+          platform: PLATFORMS.KICK,
+          platformUsername: 'kickuser',
+          isLive: true,
+        })
+      );
+
+      assert.strictEqual(mockGetKickStreamStatusResult.mock.callCount(), 2);
+      assert.strictEqual(mockFetchKickPlaylist.mock.callCount(), 2);
+    });
+
+    it('should eventually finalize repeated Kick end signals when status remains unknown', async () => {
+      mockFetchKickPlaylist.mock.mockImplementation(async () => ({
+        variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nseg999.ts\n#EXT-X-ENDLIST`,
+        baseURL: 'https://example.com/segments',
+      }));
+
+      mockGetKickStreamStatusResult.mock.mockImplementation(async () => ({
+        status: 'unknown' as const,
+        error: 'FlareSolverr timeout',
+      }));
+
+      await downloadHlsStream(
+        buildOptions({
+          platform: PLATFORMS.KICK,
+          platformUsername: 'kickuser',
+          isLive: true,
+        })
+      );
+
+      assert.strictEqual(mockGetKickStreamStatusResult.mock.callCount(), Hls.KICK_UNKNOWN_END_SIGNAL_THRESHOLD + 1);
+      assert.strictEqual(mockFetchKickPlaylist.mock.callCount(), Hls.KICK_UNKNOWN_END_SIGNAL_THRESHOLD + 1);
+    });
+
     it('should call Kick-specific functions during live polling', async () => {
       let pollCount = 0;
       const downloadedSet = new Set<string>();
@@ -649,7 +1107,7 @@ describe('downloadHlsStream', () => {
         pollCount++;
         const seg = pollCount <= 3 ? `live${String(pollCount).padStart(3, '0')}.ts` : 'live003.ts';
         return {
-          variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\n${seg}\n#EXT-X-ENDLIST`,
+          variantM3u8String: `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\n${seg}`,
           baseURL: 'https://example.com/segments',
         };
       });
@@ -708,6 +1166,38 @@ describe('downloadHlsStream', () => {
       const strategyCall = mockResolveDownloadStrategy.mock.calls[0];
       assert.ok(strategyCall);
       assert.strictEqual(strategyCall.arguments[0], PLATFORMS.TWITCH);
+    });
+
+    it('should localize absolute live playlist segment URLs before conversion', async () => {
+      const playlist = `#EXTM3U
+#EXT-X-VERSION:7
+#EXT-X-TARGETDURATION:10
+#EXT-X-MAP:URI="https://cdn.example.com/live/init.mp4?token=abc"
+#EXTINF:10.0,
+https://cdn.example.com/live/seg999.ts?token=abc
+#EXT-X-ENDLIST`;
+
+      mockFetchKickPlaylist.mock.mockImplementation(async () => ({
+        variantM3u8String: playlist,
+        baseURL: 'https://cdn.example.com/live',
+      }));
+
+      await downloadHlsStream(buildOptions({ platform: PLATFORMS.KICK, platformUserId: 'kick-123', isLive: true }));
+
+      const writeCall = mockFsWriteFile.mock.calls[0];
+      assert.ok(writeCall);
+      const writtenPlaylist = writeCall.arguments[1] as string;
+      assert.ok(writtenPlaylist.includes('init.mp4'));
+      assert.ok(writtenPlaylist.includes('seg999.ts'));
+      assert.ok(!writtenPlaylist.includes('https://cdn.example.com'));
+
+      const downloadCall = mockDownloadSegmentsParallel.mock.calls[0];
+      assert.ok(downloadCall);
+      const segments = downloadCall.arguments[0] as Array<{ uri: string }>;
+      assert.deepStrictEqual(
+        segments.map((seg) => seg.uri),
+        ['https://cdn.example.com/live/init.mp4?token=abc', 'https://cdn.example.com/live/seg999.ts?token=abc']
+      );
     });
   });
 

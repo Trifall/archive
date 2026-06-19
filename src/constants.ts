@@ -16,6 +16,12 @@ export const Vod = {
   DURATION_TOLERANCE_SECONDS: 1,
 } as const;
 
+export const WorkerRuntime = {
+  /** Live HLS jobs can legitimately spend minutes in download/ffmpeg work. */
+  LIVE_LOCK_DURATION_MS: 15 * 60 * 1_000,
+  LIVE_LOCK_RENEW_TIME_MS: 5 * 60 * 1_000,
+} as const;
+
 // ── Chat Download ────────────────────────────────────────────────────────────
 export const Chat = {
   BATCH_SIZE: 2500,
@@ -27,6 +33,9 @@ export const Chat = {
 // ── HLS ──────────────────────────────────────────────────────────────────────
 export const Hls = {
   POLL_INTERVAL_MS: 60_000,
+  MIN_LIVE_POLL_INTERVAL_MS: 2_000,
+  KICK_PLAYLIST_ERROR_RETRY_BASE_MS: 5_000,
+  KICK_UNKNOWN_END_SIGNAL_THRESHOLD: 30,
   MAX_CONSECUTIVE_ERRORS: 12,
   NO_CHANGE_THRESHOLD: 10,
   SEGMENT_RETRY_ATTEMPTS: 2,
@@ -120,6 +129,7 @@ export const Kick = {
 export const Flaresolverr = {
   TIMEOUT_MS: 5 * 60 * 1_000,
   HEALTH_CACHE_TTL_MS: 30_000,
+  SESSION_PREFIX: 'archive-session',
 } as const;
 
 // ── Encryption ───────────────────────────────────────────────────────────────

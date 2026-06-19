@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import pathMod from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -48,6 +49,66 @@ export interface FetchPlaylistResult {
   baseURL: string;
 }
 
+const MAX_FILENAME_LENGTH = 200;
+const SEGMENT_HASH_LENGTH = 24;
+
+function getSegmentHashFileName(uri: string, name: string): string {
+  let ext = pathMod.extname(name);
+  if (ext.length > 10) ext = ext.substring(0, 10);
+
+  const hash = crypto.createHash('sha1').update(uri).digest('hex').slice(0, SEGMENT_HASH_LENGTH);
+  return ext != null && ext !== '' ? `${hash}${ext}` : hash;
+}
+
+export function getSegmentFileName(uri: string): string {
+  let name: string;
+  try {
+    const parsed = new URL(uri, 'https://archive.local/');
+    name = pathMod.basename(parsed.pathname);
+    if (name === '') name = pathMod.basename(uri);
+
+    const hasScheme = /^[a-z][a-z\d+.-]*:\/\//i.test(uri);
+    const pathWithoutLeadingSlash = parsed.pathname.replace(/^\/+/, '');
+    const hasPathContext = pathWithoutLeadingSlash.includes('/');
+    const hasQueryOrHash = parsed.search !== '' || parsed.hash !== '';
+
+    if (hasScheme || hasPathContext || hasQueryOrHash || name.length > MAX_FILENAME_LENGTH) {
+      return getSegmentHashFileName(uri, name);
+    }
+  } catch {
+    name = pathMod.basename(uri);
+  }
+
+  if (name.length <= MAX_FILENAME_LENGTH) return name;
+  return getSegmentHashFileName(uri, name);
+}
+
+function resolveSegmentUrl(baseURL: string, uri: string): string {
+  return new URL(uri, `${baseURL}/`).toString();
+}
+
+function getFirstMasterVariantUri(playlistContent: string): string | null {
+  const lines = playlistContent.split('\n').map((line) => line.trim());
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line == null || !line.startsWith('#EXT-X-STREAM-INF')) continue;
+
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j];
+      if (line == null || line === '') continue;
+      if (line.startsWith('#')) break;
+      return line;
+    }
+  }
+
+  return null;
+}
+
+function isMasterPlaylist(playlistContent: string): boolean {
+  return /^#EXT-X-STREAM-INF(?::|$)/m.test(playlistContent);
+}
+
 /**
  * Download segments in parallel using p-limit for concurrency control
  * Universal function - works with both .ts and .mp4 (fMP4) segments
@@ -91,7 +152,9 @@ export async function downloadSegmentsParallel(
         return;
       }
 
-      const outputPath = pathMod.join(vodDir, segment.uri);
+      const segmentFileName = getSegmentFileName(segment.uri);
+      const segmentUrl = resolveSegmentUrl(baseURL, segment.uri);
+      const outputPath = pathMod.join(vodDir, segmentFileName);
       const tempPath = outputPath + '.tmp';
 
       const exists = await fileExists(outputPath);
@@ -117,7 +180,7 @@ export async function downloadSegmentsParallel(
           await sleep(jitter(5));
 
           if (strategy.type === 'fetch') {
-            const response = await request(`${baseURL}/${segment.uri}`, {
+            const response = await request(segmentUrl, {
               responseType: 'response',
               signal: strategy.signal,
               timeoutMs: 30000,
@@ -130,7 +193,7 @@ export async function downloadSegmentsParallel(
             const writer = fs.createWriteStream(tempPath);
             await pipeline(response.body, writer);
           } else {
-            await strategy.session.streamToFile(`${baseURL}/${segment.uri}`, tempPath, {
+            await strategy.session.streamToFile(segmentUrl, tempPath, {
               timeoutMs: 30000,
               attempts: retryAttempts,
               ...(strategy.signal != null && { signal: strategy.signal }),
@@ -149,7 +212,10 @@ export async function downloadSegmentsParallel(
           }
         }
 
-        log.debug({ uri: segment.uri, current: completedCount, total: totalSegments }, `Segment downloaded`);
+        log.debug(
+          { uri: segment.uri, fileName: segmentFileName, current: completedCount, total: totalSegments },
+          `Segment downloaded`
+        );
       } catch (error: unknown) {
         if (isAborted() === true) {
           return;
@@ -275,34 +341,28 @@ export async function fetchKickPlaylist(
     throw new Error('No Kick HLS source URL provided');
   }
 
-  let baseURL: string = '';
-
   const tempSession = session ?? createSession();
 
   try {
-    if (fetchUrl.includes('master.m3u8')) {
-      const baseEndpoint = fetchUrl.substring(0, fetchUrl.lastIndexOf('/'));
+    const playlistContent = await tempSession.fetchText(fetchUrl, retryOptions);
 
-      const masterContent = await tempSession.fetchText(fetchUrl, retryOptions);
-      const parsedMaster = HLS.parse(masterContent) as HLS.types.MasterPlaylist;
-      const bestVariant = parsedMaster.variants?.[0];
-      if (!bestVariant) {
+    if (isMasterPlaylist(playlistContent)) {
+      const bestVariantUri = getFirstMasterVariantUri(playlistContent);
+      if (bestVariantUri == null || bestVariantUri === '') {
         log.error({ vodId }, 'No variants found in Kick master playlist');
         throw new Error('No variants found in Kick master playlist');
       }
 
-      const variantUrl = `${baseEndpoint}/${bestVariant.uri}`;
-      baseURL = variantUrl.substring(0, variantUrl.lastIndexOf('/'));
+      const variantUrl = new URL(bestVariantUri, fetchUrl.substring(0, fetchUrl.lastIndexOf('/') + 1)).toString();
+      const baseURL = variantUrl.substring(0, variantUrl.lastIndexOf('/'));
       const variantM3u8String = await tempSession.fetchText(variantUrl, retryOptions);
 
       return { variantM3u8String, baseURL };
-    } else {
-      const response = await tempSession.fetchText(fetchUrl, retryOptions);
-
-      baseURL = fetchUrl.substring(0, fetchUrl.lastIndexOf('/'));
-
-      return { variantM3u8String: response, baseURL };
     }
+
+    const baseURL = fetchUrl.substring(0, fetchUrl.lastIndexOf('/'));
+
+    return { variantM3u8String: playlistContent, baseURL };
   } finally {
     if (!session) {
       tempSession.close();

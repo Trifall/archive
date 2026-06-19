@@ -26,7 +26,7 @@ export async function updateVodDurationDuringDownload(
 
     // Twitch: try parsing #EXT-X-TWITCH-TOTAL-SECS from m3u8 content first
     if (platform === PLATFORMS.TWITCH && m3u8Content != null) {
-      duration = parseTwitchTotalDuration(m3u8Content);
+      duration = parseTwitchTotalDuration(m3u8Content) ?? parseHlsSegmentDuration(m3u8Content);
 
       // Fallback to ffprobe on m3u8 file if tag not found
       if (duration == null && m3u8Path != null) {
@@ -34,9 +34,12 @@ export async function updateVodDurationDuringDownload(
         duration = (await getMetadata(m3u8Path))?.duration ?? null;
       }
     }
-    // Other platforms: ffprobe on m3u8 file
-    else if (m3u8Path != null) {
-      duration = (await getMetadata(m3u8Path))?.duration ?? null;
+    // Other platforms: prefer playlist segment duration while the live playlist is still being written.
+    else {
+      duration = m3u8Content != null ? parseHlsSegmentDuration(m3u8Content) : null;
+      if (duration == null && m3u8Path != null) {
+        duration = (await getMetadata(m3u8Path))?.duration ?? null;
+      }
     }
 
     // No duration found
@@ -84,6 +87,19 @@ function parseTwitchTotalDuration(m3u8Content: string): number | null {
   try {
     const match = m3u8Content.match(/#EXT-X-TWITCH-TOTAL-SECS:(\d+)/);
     return match?.[1] != null ? parseInt(match[1], 10) : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseHlsSegmentDuration(m3u8Content: string): number | null {
+  try {
+    const duration = [...m3u8Content.matchAll(/^#EXTINF:([0-9]+(?:\.[0-9]+)?)/gm)]
+      .map((match) => Number(match[1]))
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .reduce((sum, value) => sum + value, 0);
+
+    return duration > 0 ? duration : null;
   } catch {
     return null;
   }
