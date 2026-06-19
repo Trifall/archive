@@ -27,6 +27,8 @@ interface YoutubeConfig {
   perGameUpload?: boolean;
   restrictedGames?: (string | null)[];
   splitDuration?: number;
+  playlistId?: string;
+  playlist_id?: string;
   api_key?: string;
   liveUpload?: boolean;
   multiTrack?: boolean;
@@ -100,6 +102,8 @@ function processYoutube(config: YoutubeConfig | undefined) {
   if (config.perGameUpload !== undefined) youtube.perGameUpload = config.perGameUpload;
   if (config.restrictedGames !== undefined) youtube.restrictedGames = config.restrictedGames;
   if (config.splitDuration !== undefined) youtube.splitDuration = config.splitDuration;
+  if (config.playlistId !== undefined) youtube.playlistId = config.playlistId;
+  if (config.playlist_id !== undefined) youtube.playlistId = config.playlist_id;
   if (config.liveUpload !== undefined) youtube.liveUpload = config.liveUpload;
   if (config.multiTrack !== undefined) youtube.multiTrack = config.multiTrack;
   if (config.upload !== undefined) youtube.upload = config.upload;

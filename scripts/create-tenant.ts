@@ -334,6 +334,7 @@ async function main(): Promise<void> {
 
     console.log('\nUpload Behavior:');
     const youtubeDescription = await prompt('Video description template (use {channel} for name)');
+    const youtubePlaylistId = await prompt('YouTube playlist ID (optional)');
     const vodVisibilityOptions = '(public, unlisted, private)';
     const youtubeVodVisibility = (await prompt(`VOD upload privacy ${vodVisibilityOptions}`)) || 'public';
     const youtubeGameVisibility = (await prompt(`Game upload privacy ${vodVisibilityOptions}`)) || 'public';
@@ -372,6 +373,7 @@ async function main(): Promise<void> {
 
     youtubeData = {
       description: youtubeDescription,
+      playlistId: youtubePlaylistId || undefined,
       vodVisibility: youtubeVodVisibility,
       gameVisibility: youtubeGameVisibility,
       vodUpload: youtubeVodUpload,
@@ -520,6 +522,7 @@ async function main(): Promise<void> {
     if (youtubeData) {
       tenantData.youtube = {
         description: youtubeData.description,
+        playlistId: youtubeData.playlistId,
         vodVisibility: youtubeData.vodVisibility,
         gameVisibility: youtubeData.gameVisibility,
         vodUpload: youtubeData.vodUpload,

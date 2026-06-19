@@ -102,6 +102,14 @@ export const YoutubeSchema = z.object({
   restrictedGames: z.array(z.string().nullable()).default([]),
   /** Custom upload description template */
   description: z.string().default(''),
+  /** Optional YouTube playlist ID to append uploads to */
+  playlistId: z
+    .string()
+    .optional()
+    .transform((val) => {
+      const trimmed = val?.trim();
+      return trimmed != null && trimmed !== '' ? trimmed : undefined;
+    }),
   /** Decrypted YouTube API auth object (decrypted at parse time) */
   auth: encryptedYoutubeAuth().optional(),
   /** Encrypted YouTube API key (decrypted at parse time) */
