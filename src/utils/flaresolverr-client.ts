@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import * as cheerio from 'cheerio';
 import { getBaseConfig } from '../config/env.js';
 import { Flaresolverr } from '../constants.js';
@@ -50,6 +51,11 @@ interface FlareSolverrResponse {
   };
 }
 
+function getSessionName(url: string): string {
+  const hash = createHash('sha256').update(url).digest('hex').slice(0, 16);
+  return `${Flaresolverr.SESSION_PREFIX}-${hash}`;
+}
+
 async function fetchFromFlareSolverr(
   url: string,
   timeoutMs: number,
@@ -64,7 +70,7 @@ async function fetchFromFlareSolverr(
       cmd: 'request.get',
       url,
       maxTimeout: timeoutMs,
-      session: 'archive-session',
+      session: getSessionName(url),
       session_ttl_minutes: Math.ceil(sessionTTL / 60),
     }),
   });
