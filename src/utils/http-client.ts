@@ -1,5 +1,5 @@
-import { Agent, request as undiciRequest, type Dispatcher } from 'undici';
-import { Http } from '../constants.js';
+import { Agent, Pool, request as undiciRequest, type Dispatcher } from 'undici';
+import { Http, HttpPools, Twitch } from '../constants.js';
 import { DownloadAbortedError } from './domain-errors.js';
 import { extractErrorDetails } from './error.js';
 import { HttpError } from './http-error.js';
@@ -26,7 +26,7 @@ export interface RequestOptions<R extends ResponseType = 'json'> {
     | undefined;
   logContext?: Record<string, unknown> | undefined;
   signal?: AbortSignal | undefined;
-  dispatcher?: Agent | undefined;
+  dispatcher?: Dispatcher | undefined;
   parseReviver?: (key: string, value: unknown) => unknown;
 }
 
@@ -46,6 +46,50 @@ export const segmentDownloadAgent = new Agent({
   connections: Http.SEGMENT_DOWNLOAD_MAX_CONNECTIONS,
   pipelining: Http.SEGMENT_DOWNLOAD_PIPELINING,
 });
+
+/** Persistent pool for Twitch GraphQL API — handles chapters, comments, playback tokens. */
+const twitchGqlPool = new Pool('https://gql.twitch.tv', {
+  connections: HttpPools.TWITCH_GQL_MAX_CONNECTIONS,
+  pipelining: 1,
+  connectTimeout: Http.CONNECT_TIMEOUT_MS,
+  keepAliveTimeout: Http.KEEP_ALIVE_TIMEOUT_MS,
+});
+
+/** Persistent pool for Twitch Helix REST API. */
+const twitchApiPool = new Pool('https://api.twitch.tv', {
+  connections: HttpPools.TWITCH_API_MAX_CONNECTIONS,
+  pipelining: 1,
+  connectTimeout: Http.CONNECT_TIMEOUT_MS,
+  keepAliveTimeout: Http.KEEP_ALIVE_TIMEOUT_MS,
+});
+
+/** Persistent pool for Twitch Usher (HLS playlists). */
+const twitchUsherPool = new Pool(Twitch.USHER_ORIGIN, {
+  connections: HttpPools.TWITCH_USHER_MAX_CONNECTIONS,
+  pipelining: 1,
+  connectTimeout: Http.CONNECT_TIMEOUT_MS,
+  keepAliveTimeout: Http.KEEP_ALIVE_TIMEOUT_MS,
+});
+
+/** Persistent pool for Discord webhook alerts. */
+const discordPool = new Pool('https://discord.com', {
+  connections: HttpPools.DISCORD_MAX_CONNECTIONS,
+  pipelining: 1,
+  connectTimeout: Http.CONNECT_TIMEOUT_MS,
+  keepAliveTimeout: Http.KEEP_ALIVE_TIMEOUT_MS,
+});
+
+/** Default undici agent for all other origins (emotes, Cloudflare, id.twitch.tv, etc.). */
+const defaultAgent = new Agent({ connectTimeout: Http.CONNECT_TIMEOUT_MS });
+
+function resolveDispatcher(url: string): Dispatcher {
+  const origin = new URL(url).origin;
+  if (origin === 'https://gql.twitch.tv') return twitchGqlPool;
+  if (origin === 'https://api.twitch.tv') return twitchApiPool;
+  if (origin === 'https://usher.ttvnw.net') return twitchUsherPool;
+  if (origin === 'https://discord.com') return discordPool;
+  return defaultAgent;
+}
 
 const SENSITIVE_PARAM_PATTERNS = [/^nauthsig$/i, /^nauth$/i, /token/i, /secret/i, /_key$/i];
 
@@ -121,10 +165,12 @@ export async function request<T = unknown, R extends ResponseType = 'json'>(
     dispatcher,
   } = options ?? {};
 
-  const actualResponseType = responseType ?? ('json' as R);
-
   const urlStr = url.toString();
   const scrubbedUrl = scrubSensitiveParams(urlStr);
+
+  const effectiveDispatcher = dispatcher ?? resolveDispatcher(urlStr);
+
+  const actualResponseType = responseType ?? ('json' as R);
   const startTime = Date.now();
 
   const { body: preparedBody, headers: finalHeaders } = prepareBodyAndHeaders(body, customHeaders);
@@ -170,9 +216,7 @@ export async function request<T = unknown, R extends ResponseType = 'json'>(
         if (preparedBody !== undefined) {
           undiciOpts.body = preparedBody;
         }
-        if (dispatcher !== undefined) {
-          undiciOpts.dispatcher = dispatcher;
-        }
+        undiciOpts.dispatcher = effectiveDispatcher;
 
         const response = await undiciRequest(urlStr, undiciOpts);
 
