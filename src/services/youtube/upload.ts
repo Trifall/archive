@@ -193,6 +193,7 @@ export async function uploadVideo(
     return { videoId, thumbnailUrl };
   } catch (err) {
     const details = extractErrorDetails(err);
+    const uploadError = new Error(details.message);
     const uploadDuration = Date.now() - uploadStartTime;
 
     logger.error(
@@ -201,9 +202,9 @@ export async function uploadVideo(
     );
 
     if (onProgress) {
-      await onProgress({ milestone: 'error', errorDetails: err as Error });
+      await onProgress({ milestone: 'error', errorDetails: uploadError });
     }
 
-    throw err;
+    throw uploadError;
   }
 }

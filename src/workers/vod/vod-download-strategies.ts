@@ -4,7 +4,9 @@ import { getVod as getKickVod, getKickParsedM3u8ForFfmpeg } from '../../services
 import { getVodTokenSig } from '../../services/twitch/index.js';
 import { PLATFORMS, type Platform } from '../../types/platforms.js';
 import { ConfigNotConfiguredError } from '../../utils/domain-errors.js';
+import { extractErrorDetails } from '../../utils/error.js';
 import { request } from '../../utils/http-client.js';
+import { createSession } from '../../utils/impit-wrapper.js';
 import type { AppLogger } from '../../utils/logger.js';
 import { convertHlsToMp4, detectFmp4FromPlaylist } from '../utils/ffmpeg.js';
 
@@ -59,10 +61,12 @@ async function downloadKickVodWithFfmpeg(
     throw new Error('Failed to parse Kick HLS playlist');
   }
 
+  const isFmp4 = await detectKickFmp4FromUrl(m3u8Url, log, vodId);
+
   let kickFfmpegCmd: string | undefined;
   await convertHlsToMp4(m3u8Url, finalPath, {
     vodId: vodId,
-    isFmp4: false,
+    isFmp4,
     onProgress: (percent) => {
       const cmd = kickFfmpegCmd;
       opts.updateProgress(percent, cmd);
@@ -73,6 +77,19 @@ async function downloadKickVodWithFfmpeg(
   });
 
   log.info({ vodId }, 'Downloaded VOD');
+}
+
+async function detectKickFmp4FromUrl(m3u8Url: string, log: AppLogger, vodId: string): Promise<boolean> {
+  const session = createSession();
+
+  try {
+    return detectFmp4FromPlaylist(await session.fetchText(m3u8Url));
+  } catch (error) {
+    log.warn({ vodId, error: extractErrorDetails(error).message }, 'Failed to inspect Kick playlist for fMP4');
+    return false;
+  } finally {
+    session.close();
+  }
 }
 
 async function downloadTwitchVodWithFfmpeg(

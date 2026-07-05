@@ -56,9 +56,13 @@ interface HlsConvertOptions {
 
 interface HlsSegmentFilterResult {
   newSegments: HLS.types.Segment[];
-  isStreamEnd: boolean;
   newLastSegmentUri: string;
   newNoChangeCount: number;
+}
+
+interface RecordedPlaylistState {
+  segments: HLS.types.Segment[];
+  hasMediaSequence: boolean;
 }
 
 type SegmentWithMap = HLS.types.Segment & {
@@ -97,13 +101,17 @@ function stripNonessentialPlaylistMetadata(m3u8Content: string): string {
 
 function getSegmentSequenceKey(segment: HLS.types.Segment): string | null {
   const sequence = segment.mediaSequenceNumber;
-  if (!Number.isFinite(sequence) || sequence <= 0) return null;
+  if (!Number.isFinite(sequence) || sequence < 0) return null;
   return `media-sequence:${sequence}`;
 }
 
-function getSegmentDedupeKeys(segment: HLS.types.Segment): string[] {
+function hasExplicitMediaSequence(m3u8Content: string): boolean {
+  return /^#EXT-X-MEDIA-SEQUENCE:/m.test(m3u8Content);
+}
+
+function getSegmentDedupeKeys(segment: HLS.types.Segment, useMediaSequence = true): string[] {
   const keys = [getSegmentFileName(segment.uri)];
-  const sequenceKey = getSegmentSequenceKey(segment);
+  const sequenceKey = useMediaSequence ? getSegmentSequenceKey(segment) : null;
   if (sequenceKey != null) keys.push(sequenceKey);
   return keys;
 }
@@ -112,8 +120,20 @@ function hasAnyDedupeKey(keys: string[], downloadedSegments: Set<string>): boole
   return keys.some((key) => downloadedSegments.has(key));
 }
 
-function markSegmentDownloaded(segment: HLS.types.Segment, downloadedSegments: Set<string>): void {
-  for (const key of getSegmentDedupeKeys(segment)) downloadedSegments.add(key);
+function markSegmentDownloaded(
+  segment: HLS.types.Segment,
+  downloadedSegments: Set<string>,
+  useMediaSequence = true
+): void {
+  for (const key of getSegmentDedupeKeys(segment, useMediaSequence)) downloadedSegments.add(key);
+}
+
+function getDownloadedMediaSegmentCount(downloadedSegments: Set<string>): number {
+  return [...downloadedSegments].filter((fileName) => fileName.endsWith('.ts') || fileName.endsWith('.m4s')).length;
+}
+
+function getDownloadedHlsFileCount(downloadedSegments: Set<string>): number {
+  return [...downloadedSegments].filter(isHlsMediaFile).length;
 }
 
 function getLivePollIntervalMs(parsed: HLS.types.MediaPlaylist): number {
@@ -303,8 +323,7 @@ async function convertAndCleanup(
     );
   }
 
-  const files = await readdir(vodDir);
-  const segmentCount = files.filter((f) => f.endsWith('.mp4') || f.endsWith('.ts')).length;
+  const segmentCount = playlistDiagnostics.playlistSegmentCount;
 
   return { segmentCount, finalMp4Path };
 }
@@ -313,7 +332,8 @@ export function filterNewSegments(
   segments: HLS.types.Segment[],
   downloadedSegments: Set<string>,
   lastSegmentUri: string | null,
-  noChangeCount: number
+  noChangeCount: number,
+  useMediaSequence = true
 ): HlsSegmentFilterResult {
   const currentLastUri = segments.at(-1)?.uri ?? '';
 
@@ -324,11 +344,11 @@ export function filterNewSegments(
     noChangeCount = 0;
   }
 
-  const isStreamEnd = noChangeCount >= Hls.NO_CHANGE_THRESHOLD;
+  const newSegments = segments.filter(
+    (seg) => !hasAnyDedupeKey(getSegmentDedupeKeys(seg, useMediaSequence), downloadedSegments)
+  );
 
-  const newSegments = segments.filter((seg) => !hasAnyDedupeKey(getSegmentDedupeKeys(seg), downloadedSegments));
-
-  return { newSegments, isStreamEnd, newLastSegmentUri: currentLastUri, newNoChangeCount: noChangeCount };
+  return { newSegments, newLastSegmentUri: currentLastUri, newNoChangeCount: noChangeCount };
 }
 
 function localizeSegment(segment: HLS.types.Segment): HLS.types.Segment {
@@ -351,10 +371,16 @@ function localizePlaylistSegments(
 ): string {
   const parsed = HLS.parse(normalizePlaylistTargetDuration(variantM3u8String)) as WritableMediaPlaylist;
   const segments = segmentsOverride ?? parsed.segments ?? [];
+  const shouldPreserveMediaSequence = hasExplicitMediaSequence(variantM3u8String);
 
   parsed.segments = segments.map((segment) => localizeSegment(segment));
   const firstMediaSequence = parsed.segments[0]?.mediaSequenceNumber;
-  if (firstMediaSequence != null && Number.isFinite(firstMediaSequence) && firstMediaSequence > 0) {
+  if (
+    shouldPreserveMediaSequence &&
+    firstMediaSequence != null &&
+    Number.isFinite(firstMediaSequence) &&
+    firstMediaSequence >= 0
+  ) {
     parsed.mediaSequenceBase = firstMediaSequence;
   } else {
     delete parsed.mediaSequenceBase;
@@ -401,17 +427,17 @@ function normalizePlaylistTargetDuration(m3u8Content: string): string {
   return normalizeTargetDurationTag(sanitizedContent, Math.max(targetDuration, currentTargetDuration));
 }
 
-async function loadRecordedSegments(m3u8Path: string, log: AppLogger, vodId: string): Promise<HLS.types.Segment[]> {
+async function loadRecordedSegments(m3u8Path: string, log: AppLogger, vodId: string): Promise<RecordedPlaylistState> {
   try {
     const existingPlaylist = await readFile(m3u8Path, 'utf8');
     const parsed = HLS.parse(existingPlaylist) as HLS.types.MediaPlaylist;
-    return [...(parsed.segments ?? [])];
+    return { segments: [...(parsed.segments ?? [])], hasMediaSequence: hasExplicitMediaSequence(existingPlaylist) };
   } catch (error) {
     const details = extractErrorDetails(error);
     if (!details.message.includes('ENOENT')) {
       log.warn({ vodId, error: details.message }, 'Failed to load existing live playlist; starting a new one');
     }
-    return [];
+    return { segments: [], hasMediaSequence: false };
   }
 }
 
@@ -419,12 +445,13 @@ function appendRecordedSegments(
   recordedSegments: HLS.types.Segment[],
   recordedSegmentFileNames: Set<string>,
   currentSegments: HLS.types.Segment[],
-  downloadedSegments: Set<string>
+  downloadedSegments: Set<string>,
+  useMediaSequence: boolean
 ): number {
   let appended = 0;
 
   for (const segment of currentSegments) {
-    const segmentKeys = getSegmentDedupeKeys(segment);
+    const segmentKeys = getSegmentDedupeKeys(segment, useMediaSequence);
     if (hasAnyDedupeKey(segmentKeys, recordedSegmentFileNames) || !hasAnyDedupeKey(segmentKeys, downloadedSegments)) {
       continue;
     }
@@ -437,13 +464,8 @@ function appendRecordedSegments(
   return appended;
 }
 
-function getPlaylistDurationSeconds(m3u8Content: string): number {
-  try {
-    const parsed = HLS.parse(normalizePlaylistTargetDuration(m3u8Content)) as HLS.types.MediaPlaylist;
-    return (parsed.segments ?? []).reduce((sum, segment) => sum + (segment.duration ?? 0), 0);
-  } catch {
-    return 0;
-  }
+function getPlaylistDurationSeconds(segments: HLS.types.Segment[]): number {
+  return segments.reduce((sum, segment) => sum + (segment.duration ?? 0), 0);
 }
 
 async function getPlaylistDiagnostics(m3u8Content: string, vodDir: string): Promise<PlaylistDiagnostics> {
@@ -461,22 +483,31 @@ async function getPlaylistDiagnostics(m3u8Content: string, vodDir: string): Prom
 
   const segmentSizes = new Map<string, number | null>();
 
-  for (const fileName of uniqueSegmentFiles) {
-    try {
-      const fileStat = await stat(join(vodDir, fileName));
-      const size = fileStat.size;
-      segmentSizes.set(fileName, size);
-      totalSegmentBytes += size;
-      minSegmentBytes = minSegmentBytes == null ? size : Math.min(minSegmentBytes, size);
-      maxSegmentBytes = maxSegmentBytes == null ? size : Math.max(maxSegmentBytes, size);
-      if (size === 0) zeroByteSegmentFileCount++;
-    } catch {
-      segmentSizes.set(fileName, null);
+  const segmentStats = await Promise.all(
+    [...uniqueSegmentFiles].map(async (fileName) => {
+      try {
+        const fileStat = await stat(join(vodDir, fileName));
+        return { fileName, size: fileStat.size };
+      } catch {
+        return { fileName, size: null };
+      }
+    })
+  );
+
+  for (const { fileName, size } of segmentStats) {
+    segmentSizes.set(fileName, size);
+    if (size == null) {
       missingSegmentFileCount++;
       if (missingSegmentFilesSample.length < PLAYLIST_DIAGNOSTIC_SAMPLE_SIZE) {
         missingSegmentFilesSample.push(fileName);
       }
+      continue;
     }
+
+    totalSegmentBytes += size;
+    minSegmentBytes = minSegmentBytes == null ? size : Math.min(minSegmentBytes, size);
+    maxSegmentBytes = maxSegmentBytes == null ? size : Math.max(maxSegmentBytes, size);
+    if (size === 0) zeroByteSegmentFileCount++;
   }
 
   const toSegmentSample = (segment: HLS.types.Segment): { fileName: string; duration: number; size: number | null } => {
@@ -486,7 +517,7 @@ async function getPlaylistDiagnostics(m3u8Content: string, vodDir: string): Prom
 
   return {
     playlistSegmentCount: segments.length,
-    playlistDuration: getPlaylistDurationSeconds(m3u8Content),
+    playlistDuration: getPlaylistDurationSeconds(segments),
     playlistEndlist: parsed.endlist === true,
     uniqueSegmentFileCount: uniqueSegmentFiles.size,
     duplicateSegmentFileCount: segmentFileNames.length - uniqueSegmentFiles.size,
@@ -527,11 +558,17 @@ async function runLivePollingLoop(ctx: LivePollingContext): Promise<void> {
   let wrotePlaylist = false;
   let lastVariantM3u8String: string | null = null;
 
-  const downloadedSegments = new Set<string>(
-    await readdir(ctx.vodDir).then((files) => files.filter((f) => isHlsMediaFile(f)))
+  const downloadedSegments = new Set<string>(await readdir(ctx.vodDir).then((files) => files.filter(isHlsMediaFile)));
+  const recordedPlaylist = await loadRecordedSegments(ctx.m3u8Path, log, vodId);
+  const recordedSegments = recordedPlaylist.segments;
+  for (const segment of recordedSegments) {
+    if (downloadedSegments.has(getSegmentFileName(segment.uri))) {
+      markSegmentDownloaded(segment, downloadedSegments, recordedPlaylist.hasMediaSequence);
+    }
+  }
+  const recordedSegmentFileNames = new Set(
+    recordedSegments.flatMap((segment) => getSegmentDedupeKeys(segment, recordedPlaylist.hasMediaSequence))
   );
-  const recordedSegments = await loadRecordedSegments(ctx.m3u8Path, log, vodId);
-  const recordedSegmentFileNames = new Set(recordedSegments.flatMap((segment) => getSegmentDedupeKeys(segment)));
   if (recordedSegments.length > 0) {
     try {
       lastVariantM3u8String = normalizePlaylistTargetDuration(await readFile(ctx.m3u8Path, 'utf8'));
@@ -548,12 +585,8 @@ async function runLivePollingLoop(ctx: LivePollingContext): Promise<void> {
         attempts: 3,
         baseDelayMs: 2000,
         shouldRetry: (err) => {
-          if (err instanceof HttpError) return err.statusCode === 403 || err.statusCode >= 500;
-          const match = (err as Error).message?.match(/status (\d+)/);
-          if (match && match[1] != null) {
-            const status = parseInt(match[1], 10);
-            return status === 403 || status >= 500;
-          }
+          const status = getHttpStatusFromError(err);
+          if (status != null) return status === 403 || status >= 500;
           return false;
         },
       });
@@ -563,10 +596,18 @@ async function runLivePollingLoop(ctx: LivePollingContext): Promise<void> {
       lastVariantM3u8String = variantM3u8String;
       const parsed = HLS.parse(variantM3u8String) as HLS.types.MediaPlaylist;
       const segments = parsed.segments ?? [];
+      const currentHasMediaSequence = hasExplicitMediaSequence(variantM3u8String);
       const hasEndList = parsed.endlist === true;
       const pollIntervalMs = getLivePollIntervalMs(parsed);
+      consecutiveErrors = 0;
 
-      const result = filterNewSegments(segments, downloadedSegments, lastSegmentUri, noChangePollCount);
+      const result = filterNewSegments(
+        segments,
+        downloadedSegments,
+        lastSegmentUri,
+        noChangePollCount,
+        currentHasMediaSequence
+      );
 
       if (isNoChangeStreamEnd(result.newNoChangeCount, pollIntervalMs)) {
         const kickEndDecision = await getKickEndDecision(ctx, 'no-change threshold', kickUnknownEndSignalCount);
@@ -597,8 +638,6 @@ async function runLivePollingLoop(ctx: LivePollingContext): Promise<void> {
       if (result.newSegments.length > 0) {
         const strategy = resolveDownloadStrategy(platform, ctx.impitSession);
 
-        const totalDuration = segments.reduce((sum, seg) => sum + (seg.duration ?? 0), 0);
-
         const segmentsToDownload: { uri: string }[] = [];
         const mapFileNamesToMarkDownloaded = new Set<string>();
         const newSegmentsTyped = result.newSegments as SegmentWithMap[];
@@ -625,19 +664,26 @@ async function runLivePollingLoop(ctx: LivePollingContext): Promise<void> {
           concurrency,
           Hls.SEGMENT_RETRY_ATTEMPTS,
           log,
-          (_completedCount) => onProgress?.(downloadedSegments.size, totalDuration),
-          (batchCompleted) => onProgress?.(downloadedSegments.size + batchCompleted, totalDuration)
+          (completedCount) => {
+            const downloadedFileCount = getDownloadedHlsFileCount(downloadedSegments);
+            onProgress?.(downloadedFileCount + completedCount, downloadedFileCount + segmentsToDownload.length);
+          },
+          (batchCompleted) => {
+            const downloadedFileCount = getDownloadedHlsFileCount(downloadedSegments);
+            onProgress?.(downloadedFileCount + batchCompleted, downloadedFileCount + segmentsToDownload.length);
+          }
         );
 
         for (const mapFileName of mapFileNamesToMarkDownloaded) downloadedSegments.add(mapFileName);
-        for (const seg of result.newSegments) markSegmentDownloaded(seg, downloadedSegments);
+        for (const seg of result.newSegments) markSegmentDownloaded(seg, downloadedSegments, currentHasMediaSequence);
       }
 
       const appendedSegments = appendRecordedSegments(
         recordedSegments,
         recordedSegmentFileNames,
         segments,
-        downloadedSegments
+        downloadedSegments,
+        currentHasMediaSequence
       );
       if (appendedSegments > 0) {
         log.debug(
@@ -745,21 +791,31 @@ async function handleKickPlaylistError(
     const result = await getKickStreamStatusResult(ctx.platformUsername);
 
     if (result.status === 'live' && String(result.stream.id) === ctx.vodId) {
+      const nextErrorCount = consecutiveErrors + 1;
       const sourceUrl = result.stream.playback_url ?? undefined;
       if (sourceUrl != null && sourceUrl !== '' && sourceUrl !== ctx.sourceUrl) {
         ctx.sourceUrl = sourceUrl;
         if (shouldLog) {
           ctx.log.info(
-            { vodId: ctx.vodId, status, consecutiveErrors: consecutiveErrors + 1 },
+            { vodId: ctx.vodId, status, consecutiveErrors: nextErrorCount },
             'Refreshed Kick live playback URL after playlist error'
           );
         }
+
+        if (shouldFinalizeStaleKickLive(ctx, downloadedSegments, wrotePlaylist, status, nextErrorCount)) {
+          return 'ended';
+        }
+
         return 'retry-immediate';
       } else if (shouldLog) {
         ctx.log.warn(
-          { vodId: ctx.vodId, status, consecutiveErrors: consecutiveErrors + 1 },
+          { vodId: ctx.vodId, status, consecutiveErrors: nextErrorCount },
           'Kick live playlist unavailable; retrying'
         );
+      }
+
+      if (shouldFinalizeStaleKickLive(ctx, downloadedSegments, wrotePlaylist, status, nextErrorCount)) {
+        return 'ended';
       }
 
       return 'retry';
@@ -791,9 +847,7 @@ async function handleKickPlaylistError(
   }
 
   if (wrotePlaylist && downloadedSegments.size > 0) {
-    const downloadedMediaSegments = [...downloadedSegments].filter(
-      (fileName) => fileName.endsWith('.ts') || fileName.endsWith('.m4s')
-    ).length;
+    const downloadedMediaSegments = getDownloadedMediaSegmentCount(downloadedSegments);
     ctx.log.info(
       { vodId: ctx.vodId, status, segmentCount: downloadedMediaSegments, fileCount: downloadedSegments.size },
       'Kick stream ended before archived VOD source was available; finalizing downloaded HLS segments'
@@ -804,12 +858,60 @@ async function handleKickPlaylistError(
   return 'unhandled';
 }
 
+function shouldFinalizeStaleKickLive(
+  ctx: LivePollingContext,
+  downloadedSegments: Set<string>,
+  wrotePlaylist: boolean,
+  status: number | null,
+  consecutiveErrors: number
+): boolean {
+  if (!wrotePlaylist || downloadedSegments.size === 0 || consecutiveErrors < Hls.KICK_STALE_LIVE_ERROR_THRESHOLD) {
+    return false;
+  }
+
+  const downloadedMediaSegments = getDownloadedMediaSegmentCount(downloadedSegments);
+  if (downloadedMediaSegments === 0) return false;
+
+  ctx.log.warn(
+    { vodId: ctx.vodId, status, consecutiveErrors, segmentCount: downloadedMediaSegments },
+    'Finalizing downloaded Kick live segments after repeated playlist failures despite live status'
+  );
+  return true;
+}
+
 function getHttpStatusFromError(error: unknown): number | null {
   if (error instanceof HttpError) return error.statusCode;
+
+  const structuredStatus = getStructuredHttpStatus(error, 0);
+  if (structuredStatus != null) return structuredStatus;
+
   const details = extractErrorDetails(error);
-  const match = details.message.match(/status\s+(\d+)/i);
+  const match = details.message.match(/\b(?:status(?:Code)?|HTTP)\s*[:=]?\s*(\d{3})\b/i);
   if (match?.[1] == null) return null;
-  return Number.parseInt(match[1], 10);
+  return normalizeHttpStatus(Number.parseInt(match[1], 10));
+}
+
+function getStructuredHttpStatus(error: unknown, depth: number): number | null {
+  if (depth > 2) return null;
+  if (typeof error !== 'object' || error === null) return null;
+
+  const record = error as Record<string, unknown>;
+  return (
+    normalizeHttpStatus(record.statusCode) ??
+    normalizeHttpStatus(record.status) ??
+    getStructuredHttpStatus(record.response, depth + 1) ??
+    getStructuredHttpStatus(record.cause, depth + 1)
+  );
+}
+
+function normalizeHttpStatus(status: unknown): number | null {
+  const numericStatus = typeof status === 'string' && /^\d{3}$/.test(status) ? Number.parseInt(status, 10) : status;
+  return typeof numericStatus === 'number' &&
+    Number.isInteger(numericStatus) &&
+    numericStatus >= 100 &&
+    numericStatus <= 599
+    ? numericStatus
+    : null;
 }
 
 async function refreshKickArchivedVodSource(ctx: LivePollingContext, shouldLog: boolean): Promise<boolean> {
@@ -900,7 +1002,7 @@ async function getKickLiveEndSignalAction(ctx: LivePollingContext, reason: strin
       { vodId: ctx.vodId, reason, error: extractErrorDetails(error).message },
       'Failed to verify Kick live status'
     );
-    return 'end';
+    return 'unknown';
   }
 }
 

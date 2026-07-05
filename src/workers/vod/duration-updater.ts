@@ -85,8 +85,8 @@ export async function updateVodDurationDuringDownload(
  */
 function parseTwitchTotalDuration(m3u8Content: string): number | null {
   try {
-    const match = m3u8Content.match(/#EXT-X-TWITCH-TOTAL-SECS:(\d+)/);
-    return match?.[1] != null ? parseInt(match[1], 10) : null;
+    const match = m3u8Content.match(/#EXT-X-TWITCH-TOTAL-SECS:(\d+(?:\.\d+)?)/);
+    return match?.[1] != null ? parseFloat(match[1]) : null;
   } catch {
     return null;
   }

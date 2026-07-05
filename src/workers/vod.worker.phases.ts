@@ -134,7 +134,7 @@ export async function runVodDownload(ctx: VodProcessorContext): Promise<void> {
       discordMessageId: ctx.messageId ?? undefined,
       streamerName: ctx.streamerName,
       onProgress: (segmentsDownloaded, totalSegments) => {
-        const percent = totalSegments > 0 ? Math.round((segmentsDownloaded / totalSegments) * 100) : 0;
+        const percent = totalSegments > 0 ? Math.min(Math.round((segmentsDownloaded / totalSegments) * 100), 100) : 0;
         void ctx.job.updateProgress(percent).catch(() => {});
         safeUpdateAlert(
           ctx.messageId,
