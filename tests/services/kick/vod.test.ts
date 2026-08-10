@@ -28,7 +28,7 @@ describe('getKickParsedM3u8ForFfmpeg', () => {
 720p/playlist.m3u8`
     );
 
-    const result = await getKickParsedM3u8ForFfmpeg('https://playback.example.com/channel.m3u8?token=abc');
+    const result = await getKickParsedM3u8ForFfmpeg('https://playback.example.com/channel.m3u8?token=abc', 'user-1');
 
     assert.strictEqual(result, 'https://playback.example.com/720p/playlist.m3u8');
     assert.strictEqual(mockFetchText.mock.callCount(), 1);
@@ -43,7 +43,7 @@ describe('getKickParsedM3u8ForFfmpeg', () => {
 segment-1.ts`
     );
 
-    const result = await getKickParsedM3u8ForFfmpeg('https://playback.example.com/playlist.m3u8?token=abc');
+    const result = await getKickParsedM3u8ForFfmpeg('https://playback.example.com/playlist.m3u8?token=abc', 'user-1');
 
     assert.strictEqual(result, 'https://playback.example.com/playlist.m3u8?token=abc');
     assert.strictEqual(mockClose.mock.callCount(), 1);

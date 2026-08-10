@@ -492,6 +492,8 @@ function buildContext(overrides: Record<string, unknown> = {}) {
         cdn: { enabled: false, baseUrl: '' },
       },
       status: 'active' as const,
+      profileImageUrl: null,
+      cdnEnabled: false,
       ...overrides,
     },
     db: {} as any,

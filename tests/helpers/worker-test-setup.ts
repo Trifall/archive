@@ -21,6 +21,8 @@ export interface MockTenantConfigOverrides {
   database?: Partial<DatabaseConfig>;
   settings?: Partial<TenantSettings>;
   status?: 'active' | 'inactive';
+  profileImageUrl?: string | null;
+  cdnEnabled?: boolean;
 }
 
 export function createMockTenantConfig(overrides: MockTenantConfigOverrides = {}): TenantConfig {
@@ -47,6 +49,7 @@ export function createMockTenantConfig(overrides: MockTenantConfigOverrides = {}
       restrictedGames: [],
       description: '',
       playlistId: undefined,
+      titleTemplate: '',
       auth: undefined,
       ...(overrides.youtube ?? {}),
     },
@@ -71,6 +74,8 @@ export function createMockTenantConfig(overrides: MockTenantConfigOverrides = {}
       cdn: overrides.settings?.cdn ?? { enabled: false, baseUrl: '' },
     },
     status: overrides.status ?? 'active',
+    profileImageUrl: overrides.profileImageUrl ?? null,
+    cdnEnabled: overrides.cdnEnabled ?? false,
   };
 }
 

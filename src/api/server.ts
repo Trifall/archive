@@ -4,8 +4,7 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import swagger from '@fastify/swagger';
 import swaggerUI from '@fastify/swagger-ui';
-import Fastify from 'fastify';
-import type { FastifyBaseLogger } from 'fastify';
+import Fastify, { LogController } from 'fastify';
 import type { ApiConfig } from '../config/env.js';
 import { registerTenantConfigSubscriber } from '../config/tenant-config-subscriber.js';
 import { Server } from '../constants.js';
@@ -17,6 +16,7 @@ import configPlugin from './plugins/config.plugin.js';
 import redisPlugin from './plugins/redis.plugin.js';
 import { errorResponse } from './response.js';
 import { authRoutes, tenantsRoutes as adminTenantsRoutes, default as adminRoutes } from './routes/admin/index.js';
+import allTenantsVodsRoutes from './routes/all-tenants-vods.js';
 import badgesRoutes from './routes/badges.js';
 import chaptersRoutes from './routes/chapters.js';
 import gamesRoutes from './routes/games.js';
@@ -32,9 +32,9 @@ export async function buildServer(config: ApiConfig) {
   const fastify = Fastify({
     bodyLimit: Server.BODY_LIMIT,
     exposeHeadRoutes: true,
-    loggerInstance: logger as unknown as FastifyBaseLogger,
+    loggerInstance: logger,
+    logController: new LogController({ disableRequestLogging: true }),
     trustProxy: true,
-    disableRequestLogging: true,
     genReqId: (req) => {
       const header = req.headers['x-request-id'];
       return typeof header === 'string' && header !== '' ? header : randomUUID();
@@ -156,6 +156,7 @@ export async function buildServer(config: ApiConfig) {
       await instance.register(logsRoutes, { prefix: '' });
       await instance.register(badgesRoutes, { prefix: '' });
       await instance.register(publicTenantsRoutes, { prefix: '' });
+      await instance.register(allTenantsVodsRoutes, { prefix: '' });
     },
     { prefix: '/api/v1' }
   );

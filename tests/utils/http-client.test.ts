@@ -15,6 +15,18 @@ mock.module('undici', {
         mockAgentInstances.push(opts ?? {});
       }
     },
+    Pool: class MockPool {
+      constructor(_origin: string, _opts?: Record<string, unknown>) {}
+    },
+    BalancedPool: class MockBalancedPool {
+      constructor(_origin: string, _opts?: Record<string, unknown>) {}
+    },
+    RetryAgent: class MockRetryAgent {
+      constructor(_dispatcher: any) {}
+    },
+    Dispatcher: {},
+    setGlobalDispatcher: () => {},
+    intercept: () => ({}),
   },
 });
 

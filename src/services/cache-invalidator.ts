@@ -1,4 +1,3 @@
-import type { FastifyInstance } from 'fastify';
 import { Cache } from '../constants.js';
 import { simpleKeys } from '../utils/cache-keys.js';
 import { defaultCacheContext } from '../utils/cache.js';
@@ -130,7 +129,9 @@ export async function publishGameUpdate(tenantId: string): Promise<void> {
  * Handles VOD_UPDATED (invalidates static cache) and VOD_DURATION_UPDATED (sets volatile cache).
  * Subscribes to the cache channel and hooks into fastify's onClose for cleanup.
  */
-export function registerCacheSubscriber(fastify: FastifyInstance): void {
+export function registerCacheSubscriber(fastify: {
+  addHook: (hook: 'onClose', fn: () => Promise<void>) => void;
+}): void {
   const { destroy } = createRedisSubscriber({
     channel: CACHE_CHANNEL,
     handler: handleCacheEvent,
@@ -145,7 +146,9 @@ export function registerCacheSubscriber(fastify: FastifyInstance): void {
  * Handles GAME_UPDATED (invalidates all game cache keys for the tenant).
  * Subscribes to the game cache channel and hooks into fastify's onClose for cleanup.
  */
-export function registerGameCacheSubscriber(fastify: FastifyInstance): void {
+export function registerGameCacheSubscriber(fastify: {
+  addHook: (hook: 'onClose', fn: () => Promise<void>) => void;
+}): void {
   const { destroy } = createRedisSubscriber({
     channel: GAME_CACHE_CHANNEL,
     handler: handleGameCacheEvent,

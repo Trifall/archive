@@ -138,16 +138,16 @@ function getKickParsedM3u8(m3u8: string, sourceUrl: string): string | null {
   }
 }
 
-export async function getVod(channelName: string, vodId: string): Promise<KickVod> {
+export async function getVod(channelName: string, vodId: string, sessionId?: string): Promise<KickVod> {
   if (KICK_UUID_PATTERN.test(vodId)) {
-    const byUuid = await fetchUrl<KickVideoByUuidResponse>(`${Kick.API_BASE}/api/v1/video/${vodId}`);
+    const byUuid = await fetchUrl<KickVideoByUuidResponse>(`${Kick.API_BASE}/api/v1/video/${vodId}`, { sessionId });
 
     if (byUuid.success && byUuid.data?.uuid === vodId) {
       return normalizeVideoByUuid(byUuid.data);
     }
   }
 
-  const result = await fetchUrl<KickVod[]>(`${Kick.API_BASE}/api/v2/channels/${channelName}/videos`);
+  const result = await fetchUrl<KickVod[]>(`${Kick.API_BASE}/api/v2/channels/${channelName}/videos`, { sessionId });
 
   if (!result.success) {
     throw new Error('Failed to load Kick videos API after retries');
@@ -171,8 +171,8 @@ export async function getVod(channelName: string, vodId: string): Promise<KickVo
   return video;
 }
 
-export async function getKickParsedM3u8ForFfmpeg(sourceUrl: string): Promise<string | null> {
-  const session = createSession();
+export async function getKickParsedM3u8ForFfmpeg(sourceUrl: string, platformUserId: string): Promise<string | null> {
+  const session = createSession(`kick-${platformUserId}`);
 
   try {
     const m3u8Content = await session.fetchText(sourceUrl);

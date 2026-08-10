@@ -37,9 +37,7 @@ interface KickLiveApiResponse {
 }
 
 export type KickStreamStatusResult =
-  | { status: 'live'; stream: KickLiveStreamRaw }
-  | { status: 'offline' }
-  | { status: 'unknown'; error: string };
+  { status: 'live'; stream: KickLiveStreamRaw } | { status: 'offline' } | { status: 'unknown'; error: string };
 
 export interface KickBannerImage {
   src?: string;
@@ -52,12 +50,12 @@ export interface KickCategoryInfo {
   banner?: KickBannerImage | null;
 }
 
-export async function getKickStreamStatus(username: string): Promise<KickLiveStreamRaw | null> {
-  const result = await getKickStreamStatusResult(username);
+export async function getKickStreamStatus(username: string, sessionId?: string): Promise<KickLiveStreamRaw | null> {
+  const result = await getKickStreamStatusResult(username, sessionId);
   return result.status === 'live' ? result.stream : null;
 }
 
-export async function getKickStreamStatusResult(username: string): Promise<KickStreamStatusResult> {
+export async function getKickStreamStatusResult(username: string, sessionId?: string): Promise<KickStreamStatusResult> {
   try {
     const apiUrl = `https://kick.com/api/v2/channels/${username}/livestream`;
 
@@ -66,6 +64,7 @@ export async function getKickStreamStatusResult(username: string): Promise<KickS
     const result = await fetchUrl<KickLiveApiResponse>(apiUrl, {
       timeoutMs: Kick.LIVE_API_TIMEOUT_MS,
       maxRetries: 2,
+      sessionId,
     });
 
     if (!result.success) {
@@ -110,7 +109,12 @@ export async function getKickStreamStatusResult(username: string): Promise<KickS
   }
 }
 
-export async function getLatestKickVodObject(username: string, expectedStreamId: string): Promise<KickVod | null> {
+export async function getLatestKickVodObject(
+  username: string,
+  expectedStreamId: string,
+  expectedUserId?: string,
+  sessionId?: string
+): Promise<KickVod | null> {
   try {
     const videosUrl = `https://kick.com/api/v2/channels/${username}/videos`;
 
@@ -119,6 +123,7 @@ export async function getLatestKickVodObject(username: string, expectedStreamId:
     const result = await fetchUrl<unknown[]>(videosUrl, {
       timeoutMs: Kick.LIVE_API_TIMEOUT_MS,
       maxRetries: 2,
+      sessionId,
     });
 
     if (!result.success) {
@@ -138,7 +143,10 @@ export async function getLatestKickVodObject(username: string, expectedStreamId:
 
     const vodObject = dataArray.find((v: KickVod) => {
       if (v == null || typeof v !== 'object') return false;
-      return String(v.id) === expectedStreamId || String(v.video?.live_stream_id) === expectedStreamId;
+      const matchesStream = String(v.id) === expectedStreamId || String(v.video?.live_stream_id) === expectedStreamId;
+      if (!matchesStream) return false;
+      if (expectedUserId != null && String(v.channel_id) !== expectedUserId) return false;
+      return true;
     });
 
     if (vodObject != null) {
@@ -147,7 +155,7 @@ export async function getLatestKickVodObject(username: string, expectedStreamId:
       return vodObject;
     }
 
-    const liveStream = await getKickStreamStatus(username);
+    const liveStream = await getKickStreamStatus(username, sessionId);
 
     if (liveStream == null || String(liveStream.id) !== expectedStreamId) {
       getLogger().debug({ username, expectedStreamId }, 'Kick video object not found yet');

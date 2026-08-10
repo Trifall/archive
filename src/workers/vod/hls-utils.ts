@@ -366,7 +366,9 @@ export async function fetchKickPlaylist(
     throw new Error('No Kick HLS source URL provided');
   }
 
-  const tempSession = session ?? createSession();
+  // Fallback: unreachable in production (live loop always passes impitSession),
+  // but keyed by vodId to avoid unbounded map growth if ever called directly.
+  const tempSession = session ?? createSession(`kick-fallback-${vodId}`);
 
   try {
     const playlistContent = await tempSession.fetchText(fetchUrl, retryOptions);

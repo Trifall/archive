@@ -110,6 +110,8 @@ export const YoutubeSchema = z.object({
       const trimmed = val?.trim();
       return trimmed != null && trimmed !== '' ? trimmed : undefined;
     }),
+  /** Custom YouTube title template using {{variables}} (empty = structured format) */
+  titleTemplate: z.string().default(''),
   /** Decrypted YouTube API auth object (decrypted at parse time) */
   auth: encryptedYoutubeAuth().optional(),
   /** Encrypted YouTube API key (decrypted at parse time) */
